@@ -1,0 +1,12 @@
+Overall, the architecture and components align well with the goals:
+- **Efficient Pi 5 Operation:** Uses YOLOv8n (nano model) and adapts processing rate to save resources when idle – suitable for the Pi. Threads ensure the camera stream remains active independently of detection.
+- **Adaptive Detection Rate:** Implemented as required (1 FPS idle, ~5 FPS active) in DetectionManager.
+- **Multi-threading:** Camera and detection run in separate threads (with locks to protect shared data), which helps avoid blocking the video feed. This concurrency is in place. No multiprocessing is used yet, but threading on the Pi’s multi-core CPU should suffice for now.
+- **Database Logging:** All detection events and counts can be stored in SQLite (already set up) for persistence.
+- **Web Dashboard:** A basic dashboard exists (the test page), showing real-time analytics. It uses AJAX polling to stay updated without manual page refresh.
+- **Missing/Incomplete Features:** The main gaps are:
+    - **Live Video Stream:** Currently the page uses a static image endpoint (/api/frame/current) refreshed periodically. A continuous stream (e.g. MJPEG or WebRTC) is not yet implemented.
+    - **Detection Toggle:** There is no way to pause/resume detection via the UI or API. The system always starts detection on launch.
+    - **Real-time Updates:** The dashboard relies on fixed-interval polling. There’s no push mechanism (WebSocket) to instantly reflect events (like a person appearing or direction change) as they happen.
+    - **DashboardManager Completion:** The DashboardManager is mostly functional for counts, but one method _process_detection_events is a placeholder (pass), meaning some event processing (like marking when a person leaves) isn’t fully handled.
+    - **IP Camera Input:** Currently only a USB camera (OpenCV device 0) is used. Adapting to an RTSP IP camera isn’t implemented yet (though likely just a config change).

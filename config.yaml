@@ -1,0 +1,34 @@
+# ZVision System Configuration
+
+# Camera settings
+camera:
+  device_id: 0           # Camera device ID (0 for default camera)
+  width: 640             # Frame width
+  height: 480            # Frame height
+  fps: 30                # Camera capture FPS
+
+# Detection settings
+detection:
+  model_path: "yolov8n.pt"  # YOLOv8 model path (will download if not present)
+  confidence_threshold: 0.5  # Minimum confidence for person detection
+  idle_fps: 1           # Processing rate when no person detected
+  active_fps: 5         # Processing rate when person present
+  person_class_id: 0    # Class ID for person in YOLO model
+  direction_threshold: 50  # Minimum pixel movement to determine direction
+
+# API settings
+api:
+  host: '0.0.0.0'  # Listen on all interfaces
+  port: 5000       # Port to serve API
+  debug: true      # Enable debug mode
+  
+# Database settings
+database:
+  path: "database/zvision.db"  # SQLite database path
+  
+# Logging settings
+logging:
+  level: "INFO"          # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  file: "logs/app.log"   # Log file path
+  max_size_mb: 10        # Maximum log file size in MB
+  backup_count: 3        # Number of backup log files to keep 

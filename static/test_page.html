@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ZVision Detection System</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        #camera-feed {
+            width: 100%;
+            max-width: 640px;
+            border: 1px solid #ddd;
+            display: block;
+            margin: 0 auto;
+        }
+        .buttons {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button.inactive {
+            background-color: #f44336;
+        }
+        button.inactive:hover {
+            background-color: #d32f2f;
+        }
+        .metrics {
+            margin-top: 30px;
+        }
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .card h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-active {
+            background-color: #4CAF50;
+        }
+        .status-inactive {
+            background-color: #f44336;
+        }
+        .notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+            opacity: 0;
+            transform: translateY(20px);
+            z-index: 1000;
+        }
+        .notification.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .notification.detection-start {
+            background-color: #4CAF50;
+        }
+        .notification.detection-end {
+            background-color: #f44336;
+        }
+        .notification.direction {
+            background-color: #2196F3;
+        }
+        .settings {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .toggle-switch label {
+            margin-right: 10px;
+            min-width: 180px;
+        }
+        .recent-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .recent-table th, .recent-table td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .recent-table th {
+            background-color: #f2f2f2;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: white;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .badge-ltr {
+            background-color: #4CAF50;
+        }
+        .badge-rtl {
+            background-color: #2196F3;
+        }
+        .badge-unknown {
+            background-color: #FFC107;
+        }
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            color: white;
+            background-color: #666;
+            z-index: 1000;
+        }
+        .connection-status.connected {
+            background-color: #4CAF50;
+        }
+        .connection-status.disconnected {
+            background-color: #f44336;
+        }
+        
+        /* Responsive design */
+        @media (max-width: 600px) {
+            .container {
+                padding: 10px;
+            }
+            .card {
+                padding: 10px;
+            }
+            button {
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            .recent-table th, .recent-table td {
+                padding: 6px;
+                font-size: 14px;
+            }
+            .buttons {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+            button {
+                width: 80%;
+                margin: 5px 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status" id="connection-status">Connecting...</div>
+    
+    <div class="container">
+        <h1>ZVision Detection System</h1>
+        
+        <div class="card">
+            <h3>System Status</h3>
+            <div class="status" id="status-container">
+                Loading status...
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>Live Camera Feed</h3>
+            <img id="camera-feed" src="/video_feed" alt="Live camera feed">
+            <div class="buttons">
+                <button id="toggle-detect">Pause Detection</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>Recent Detections</h3>
+            <div id="recent-detections">Loading recent detections...</div>
+        </div>
+        
+        <div class="card metrics">
+            <h3>Detection Metrics</h3>
+            <div id="metrics-container">Loading metrics...</div>
+        </div>
+        
+        <div class="card">
+            <h3>Event Log</h3>
+            <div id="event-log" style="max-height: 150px; overflow-y: auto; border: 1px solid #eee; padding: 10px; margin-top: 10px;">
+                Waiting for events...
+            </div>
+        </div>
+        
+        <div id="notification" class="notification"></div>
+        
+        <!-- Socket.IO Client -->
+        <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+        <script>
+            // Track detection state
+            let detectionOn = true;
+            let socketConnected = false;
+            let socket;
+            
+            // Update system status
+            function updateStatus() {
+                console.log("Fetching status from /api/status...");
+                fetch('/api/status')
+                    .then(response => {
+                        console.log("Status response received:", response.status);
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! Status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log("Status data:", data);
+                        // Update detection toggle button state based on server status
+                        detectionOn = data.detection_active;
+                        const toggleBtn = document.getElementById('toggle-detect');
+                        toggleBtn.innerText = detectionOn ? 'Pause Detection' : 'Resume Detection';
+                        toggleBtn.className = detectionOn ? '' : 'inactive';
+                        
+                        let statusHTML = '<p><strong>Time:</strong> ' + data.system.timestamp + '</p>';
+                        
+                        // System status indicator
+                        statusHTML += '<p><strong>System Status:</strong> <span class="status-indicator status-active"></span>' + data.system.status + '</p>';
+                        
+                        // Detection active indicator
+                        statusHTML += '<p><strong>Detection Status:</strong> ';
+                        if (data.system && data.system.status === 'running' && data.detection_active !== false) {
+                            statusHTML += '<span class="status-indicator status-active"></span>Active';
+                        } else {
+                            statusHTML += '<span class="status-indicator status-inactive"></span>Paused';
+                        }
+                        statusHTML += '</p>';
+                        
+                        // Only show person detection state if detection is active
+                        if (detectionOn) {
+                            statusHTML += '<p><strong>Person Detected:</strong> ';
+                            if (data.detection.person_detected) {
+                                statusHTML += '<span class="status-indicator status-active"></span>Yes';
+                            } else {
+                                statusHTML += '<span class="status-indicator status-inactive"></span>No';
+                            }
+                            statusHTML += '</p>';
+                            
+                            statusHTML += '<p><strong>Movement Direction:</strong> ';
+                            if (data.detection.direction !== 'unknown') {
+                                const dirText = data.detection.direction === 'left_to_right' ? 'Left to Right' : 'Right to Left';
+                                statusHTML += dirText;
+                            } else {
+                                statusHTML += 'Unknown';
+                            }
+                            statusHTML += '</p>';
+                            
+                            if (data.detection.last_detection_time) {
+                                statusHTML += '<p><strong>Last Detection:</strong> ' + data.detection.last_detection_time + '</p>';
+                            }
+                        } else {
+                            statusHTML += '<p><em>Detection is currently paused</em></p>';
+                        }
+                        
+                        document.getElementById('status-container').innerHTML = statusHTML;
+                    })
+                    .catch(err => {
+                        console.error('Error fetching status:', err);
+                        document.getElementById('status-container').innerHTML = '<p>Error loading status. Please try again.</p><p>Error details: ' + err.message + '</p>';
+                    });
+            }
+            
+            // Update metrics
+            function updateMetrics() {
+                // Fetch current metrics
+                fetch('/api/metrics')
+                    .then(response => response.json())
+                    .then(data => {
+                        let metricsHTML = '<p><strong>Footfall Count:</strong> ' + data.footfall_count + '</p>';
+                        metricsHTML += '<p><strong>Direction Counts:</strong></p>';
+                        metricsHTML += '<ul>';
+                        metricsHTML += '<li>Left to Right: ' + data.total.direction_counts.left_to_right + '</li>';
+                        metricsHTML += '<li>Right to Left: ' + data.total.direction_counts.right_to_left + '</li>';
+                        metricsHTML += '<li>Unknown: ' + data.total.direction_counts.unknown + '</li>';
+                        metricsHTML += '</ul>';
+                        
+                        // Add daily breakdown if available
+                        fetch('/api/metrics/daily')
+                            .then(response => response.json())
+                            .then(dailyData => {
+                                if (Object.keys(dailyData).length > 0) {
+                                    metricsHTML += '<p><strong>Daily Breakdown (Last 7 Days):</strong></p>';
+                                    metricsHTML += '<table style="width:100%; border-collapse: collapse;">';
+                                    metricsHTML += '<tr><th style="text-align:left; padding:5px; border-bottom:1px solid #ddd;">Date</th>' +
+                                                   '<th style="text-align:center; padding:5px; border-bottom:1px solid #ddd;">Count</th>' + 
+                                                   '<th style="text-align:center; padding:5px; border-bottom:1px solid #ddd;">L→R</th>' + 
+                                                   '<th style="text-align:center; padding:5px; border-bottom:1px solid #ddd;">R→L</th></tr>';
+                                    
+                                    // Sort dates in descending order
+                                    const sortedDates = Object.keys(dailyData).sort().reverse();
+                                    
+                                    sortedDates.forEach(date => {
+                                        const dayData = dailyData[date];
+                                        metricsHTML += `<tr>
+                                            <td style="padding:5px; border-bottom:1px solid #eee;">${date}</td>
+                                            <td style="text-align:center; padding:5px; border-bottom:1px solid #eee;">${dayData.detection_count}</td>
+                                            <td style="text-align:center; padding:5px; border-bottom:1px solid #eee;">${dayData.left_to_right}</td>
+                                            <td style="text-align:center; padding:5px; border-bottom:1px solid #eee;">${dayData.right_to_left}</td>
+                                        </tr>`;
+                                    });
+                                    
+                                    metricsHTML += '</table>';
+                                }
+                                
+                                // Fetch long-term metrics summary
+                                fetch('/api/metrics/summary')
+                                    .then(response => response.json())
+                                    .then(summaryData => {
+                                        metricsHTML += `<p><strong>Long-term Summary (${summaryData.period_days} days):</strong></p>`;
+                                        metricsHTML += '<p>Total detections: ' + summaryData.total_detections + '</p>';
+                                        
+                                        // Calculate percentages for direction breakdown
+                                        let total = summaryData.total_detections || 1; // avoid division by zero
+                                        let leftToRight = summaryData.direction_counts.left_to_right || 0;
+                                        let rightToLeft = summaryData.direction_counts.right_to_left || 0;
+                                        let unknown = summaryData.direction_counts.unknown || 0;
+                                        
+                                        let leftToRightPct = Math.round((leftToRight / total) * 100);
+                                        let rightToLeftPct = Math.round((rightToLeft / total) * 100);
+                                        let unknownPct = Math.round((unknown / total) * 100);
+                                        
+                                        // Create a simple bar chart
+                                        metricsHTML += '<div style="margin-top: 10px;">';
+                                        metricsHTML += '<div style="display: flex; align-items: center; margin-bottom: 5px;">';
+                                        metricsHTML += '<span style="width: 100px;">Left to Right:</span>';
+                                        metricsHTML += `<div style="background-color: #4CAF50; height: 20px; width: ${leftToRightPct}%"></div>`;
+                                        metricsHTML += `<span style="margin-left: 5px;">${leftToRight} (${leftToRightPct}%)</span>`;
+                                        metricsHTML += '</div>';
+                                        
+                                        metricsHTML += '<div style="display: flex; align-items: center; margin-bottom: 5px;">';
+                                        metricsHTML += '<span style="width: 100px;">Right to Left:</span>';
+                                        metricsHTML += `<div style="background-color: #2196F3; height: 20px; width: ${rightToLeftPct}%"></div>`;
+                                        metricsHTML += `<span style="margin-left: 5px;">${rightToLeft} (${rightToLeftPct}%)</span>`;
+                                        metricsHTML += '</div>';
+                                        
+                                        if (unknown > 0) {
+                                            metricsHTML += '<div style="display: flex; align-items: center;">';
+                                            metricsHTML += '<span style="width: 100px;">Unknown:</span>';
+                                            metricsHTML += `<div style="background-color: #FFC107; height: 20px; width: ${unknownPct}%"></div>`;
+                                            metricsHTML += `<span style="margin-left: 5px;">${unknown} (${unknownPct}%)</span>`;
+                                            metricsHTML += '</div>';
+                                        }
+                                        metricsHTML += '</div>';
+                                        
+                                        // Update the metrics container
+                                        document.getElementById('metrics-container').innerHTML = metricsHTML;
+                                    })
+                                    .catch(err => {
+                                        console.error('Error fetching metrics summary:', err);
+                                        document.getElementById('metrics-container').innerHTML = metricsHTML;
+                                    });
+                            })
+                            .catch(err => {
+                                console.error('Error fetching daily metrics:', err);
+                                document.getElementById('metrics-container').innerHTML = metricsHTML;
+                            });
+                    })
+                    .catch(err => {
+                        console.error('Error fetching metrics:', err);
+                        document.getElementById('metrics-container').innerHTML = '<p>Error loading metrics. Please try again.</p>';
+                    });
+            }
+            
+            // Update recent detections
+            function updateRecentDetections() {
+                fetch('/api/detections/recent?count=5')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.length === 0) {
+                            document.getElementById('recent-detections').innerHTML = '<p>No recent detections</p>';
+                            return;
+                        }
+                        
+                        let tableHTML = '<table class="recent-table">';
+                        tableHTML += '<tr><th>Time</th><th>Event</th><th>Direction</th></tr>';
+                        
+                        data.forEach(event => {
+                            let directionDisplay = '';
+                            let badgeClass = '';
+                            
+                            if (event.direction === 'left_to_right') {
+                                directionDisplay = 'Left → Right';
+                                badgeClass = 'badge-ltr';
+                            } else if (event.direction === 'right_to_left') {
+                                directionDisplay = 'Right → Left';
+                                badgeClass = 'badge-rtl';
+                            } else {
+                                directionDisplay = 'Unknown';
+                                badgeClass = 'badge-unknown';
+                            }
+                            
+                            // Format the timestamp to a more readable format
+                            const timestamp = new Date(event.timestamp.replace(' ', 'T')); // Convert to proper ISO format
+                            const formattedTime = timestamp.toLocaleTimeString();
+                            
+                            tableHTML += `<tr>
+                                <td>${formattedTime}</td>
+                                <td>${event.event_type}</td>
+                                <td><span class="badge ${badgeClass}">${directionDisplay}</span></td>
+                            </tr>`;
+                        });
+                        
+                        tableHTML += '</table>';
+                        document.getElementById('recent-detections').innerHTML = tableHTML;
+                    })
+                    .catch(err => {
+                        console.error('Error fetching recent detections:', err);
+                        document.getElementById('recent-detections').innerHTML = '<p>Error loading recent detections. Please try again.</p>';
+                    });
+            }
+            
+            // Toggle detection on/off
+            function toggleDetection() {
+                const url = detectionOn ? '/api/detection/stop' : '/api/detection/start';
+                fetch(url, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.error) {
+                            alert("Failed to toggle detection: " + data.error);
+                            return;
+                        }
+                        detectionOn = !detectionOn;
+                        // Update button text and class
+                        const toggleBtn = document.getElementById('toggle-detect');
+                        toggleBtn.innerText = detectionOn ? 'Pause Detection' : 'Resume Detection';
+                        toggleBtn.className = detectionOn ? '' : 'inactive';
+                        // Update status to reflect the change
+                        updateStatus();
+                        // Show notification
+                        showNotification(detectionOn ? 'Detection started' : 'Detection paused', detectionOn ? 'detection-start' : 'detection-end');
+                    })
+                    .catch(err => {
+                        console.error('Error toggling detection:', err);
+                        alert('Failed to toggle detection: ' + err.message);
+                    });
+            }
+            
+            // Show notification
+            function showNotification(message, type) {
+                const notification = document.getElementById('notification');
+                notification.textContent = message;
+                notification.className = `notification ${type} show`;
+                
+                // Add event to log
+                addEventToLog(message);
+                
+                // Hide after 3 seconds
+                setTimeout(() => {
+                    notification.className = 'notification';
+                }, 3000);
+            }
+            
+            // Add event to log
+            function addEventToLog(message) {
+                const eventLog = document.getElementById('event-log');
+                const time = new Date().toLocaleTimeString();
+                const eventItem = document.createElement('div');
+                eventItem.innerHTML = `<small>${time}</small> - ${message}`;
+                eventItem.style.borderBottom = '1px solid #eee';
+                eventItem.style.padding = '5px 0';
+                
+                // Add to beginning of log
+                if (eventLog.firstChild) {
+                    eventLog.insertBefore(eventItem, eventLog.firstChild);
+                } else {
+                    eventLog.appendChild(eventItem);
+                }
+                
+                // Limit to 50 entries
+                if (eventLog.children.length > 50) {
+                    eventLog.removeChild(eventLog.lastChild);
+                }
+            }
+            
+            // Initialize WebSocket connection
+            function initSocketIO() {
+                console.log("Initializing Socket.IO connection...");
+                
+                // Create socket connection
+                socket = io();
+                
+                // Basic event handlers
+                socket.on('connect', function() {
+                    console.log('Connected to WebSocket server');
+                    socketConnected = true;
+                    addEventToLog('Connected to real-time updates');
+                    document.getElementById('connection-status').textContent = 'Connected';
+                    document.getElementById('connection-status').className = 'connection-status connected';
+                });
+                
+                socket.on('disconnect', function() {
+                    console.log('Disconnected from WebSocket server');
+                    socketConnected = false;
+                    addEventToLog('Disconnected from real-time updates');
+                    document.getElementById('connection-status').textContent = 'Disconnected';
+                    document.getElementById('connection-status').className = 'connection-status disconnected';
+                });
+                
+                socket.on('connect_error', function(error) {
+                    console.error('Connection error:', error);
+                    socketConnected = false;
+                    addEventToLog('Connection error: ' + error);
+                });
+                
+                // Event-specific handlers
+                socket.on('detection_start', function(data) {
+                    console.log('Detection start event:', data);
+                    addEventToLog('Person detected');
+                    showNotification('Person detected', 'detection-start');
+                    updateStatus();
+                    updateRecentDetections();
+                });
+                
+                socket.on('direction', function(data) {
+                    console.log('Direction event:', data);
+                    const dirText = data.direction === 'left_to_right' ? 'left to right' : 'right to left';
+                    addEventToLog('Direction detected: ' + dirText);
+                    showNotification('Direction detected: ' + dirText, 'direction');
+                    updateStatus();
+                });
+                
+                socket.on('detection_end', function(data) {
+                    console.log('Detection end event:', data);
+                    addEventToLog('Person lost');
+                    showNotification('Person lost', 'detection-end');
+                    updateStatus();
+                    updateMetrics();
+                });
+                
+                // Log any other events
+                socket.onAny(function(eventName, ...args) {
+                    console.log('Event received:', eventName, args);
+                });
+            }
+            
+            // Update everything on page load
+            document.addEventListener('DOMContentLoaded', function() {
+                console.log("Page loaded, initializing...");
+                
+                // Initial updates
+                updateStatus();
+                updateMetrics();
+                updateRecentDetections();
+                
+                // Set up detection toggle button
+                document.getElementById('toggle-detect').addEventListener('click', toggleDetection);
+                
+                // Set up click handlers for connection status
+                document.getElementById('connection-status').addEventListener('click', function() {
+                    if (!socketConnected) {
+                        // Try to reconnect
+                        addEventToLog('Attempting to reconnect...');
+                        if (socket) {
+                            socket.connect();
+                        } else {
+                            initSocketIO();
+                        }
+                    } else {
+                        // Just toggle visibility
+                        this.style.opacity = this.style.opacity === '0' ? '1' : '0';
+                    }
+                });
+                
+                // Initialize real-time connection after initial updates
+                setTimeout(() => initSocketIO(), 1000);
+                
+                // Set up polling as fallback (will run regardless of WebSocket status)
+                setInterval(updateStatus, 15000);       // Update status every 15 seconds
+                setInterval(updateMetrics, 30000);      // Update metrics every 30 seconds
+                setInterval(updateRecentDetections, 15000); // Update recent detections every 15 seconds
+            });
+        </script>
+    </div>
+</body>
+</html> 

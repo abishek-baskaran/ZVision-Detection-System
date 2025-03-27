@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SocketIO Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            background-color: #f9f9f9;
+        }
+        .message {
+            margin-bottom: 5px;
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .server-time {
+            color: #2c3e50;
+            font-weight: bold;
+        }
+        .status {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #e7f4e4;
+            border-radius: 4px;
+        }
+        .status.disconnected {
+            background-color: #f4e4e4;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>SocketIO Test Page</h1>
+    
+    <div id="connection-status" class="status">
+        Connection status: Disconnected
+    </div>
+    
+    <div id="messages">
+        <div class="message">Waiting for messages...</div>
+    </div>
+    
+    <button id="test-api">Test API Endpoint</button>
+    <button id="clear-messages">Clear Messages</button>
+    
+    <!-- Include Socket.IO client library -->
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const messagesDiv = document.getElementById('messages');
+            const connectionStatus = document.getElementById('connection-status');
+            const testApiButton = document.getElementById('test-api');
+            const clearMessagesButton = document.getElementById('clear-messages');
+            
+            // Add a message to the messages div
+            function addMessage(text, className = '') {
+                const messageElem = document.createElement('div');
+                messageElem.className = 'message ' + className;
+                messageElem.textContent = text;
+                messagesDiv.appendChild(messageElem);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+            
+            // Connect to Socket.IO server
+            const socket = io();
+            
+            // Socket.IO event handlers
+            socket.on('connect', function() {
+                connectionStatus.textContent = 'Connection status: Connected';
+                connectionStatus.classList.remove('disconnected');
+                addMessage('Connected to server');
+            });
+            
+            socket.on('disconnect', function() {
+                connectionStatus.textContent = 'Connection status: Disconnected';
+                connectionStatus.classList.add('disconnected');
+                addMessage('Disconnected from server');
+            });
+            
+            socket.on('message', function(data) {
+                addMessage('Server message: ' + data.data);
+            });
+            
+            socket.on('server_time', function(data) {
+                addMessage(`Server time: ${data.time} (update #${data.count})`, 'server-time');
+            });
+            
+            // Button event handlers
+            testApiButton.addEventListener('click', function() {
+                addMessage('Testing API endpoint...');
+                
+                fetch('/api/test')
+                    .then(response => response.json())
+                    .then(data => {
+                        addMessage(`API response: ${data.message}`);
+                    })
+                    .catch(error => {
+                        addMessage(`Error testing API: ${error.message}`);
+                    });
+            });
+            
+            clearMessagesButton.addEventListener('click', function() {
+                messagesDiv.innerHTML = '';
+                addMessage('Messages cleared');
+            });
+        });
+    </script>
+</body>
+</html> 
