@@ -34,12 +34,21 @@ class DashboardManager:
             "unknown": 0
         }
         
+        # Entry/Exit metrics for footfall tracking
+        self.footfall_counts = {
+            "entry": 0,
+            "exit": 0,
+            "unknown": 0
+        }
+        
         # For hourly metrics
         self.hourly_stats = defaultdict(lambda: {
             "detection_count": 0,
             "left_to_right": 0,
             "right_to_left": 0,
-            "unknown": 0
+            "unknown": 0,
+            "entry": 0,
+            "exit": 0
         })
         
         # Detection history (for recent events)
@@ -48,6 +57,9 @@ class DashboardManager:
         # Last detection time and direction
         self.last_detection_time = None
         self.last_direction = None
+        
+        # Last footfall type
+        self.last_footfall_type = None
         
         self.logger.info("DashboardManager initialized")
         
@@ -99,6 +111,37 @@ class DashboardManager:
             })
             
             self.logger.info(f"Recorded direction: {direction}")
+    
+    def record_footfall(self, event_type):
+        """
+        Record a footfall event (entry or exit)
+        
+        Args:
+            event_type (str): Type of footfall event ('entry', 'exit', or other)
+        """
+        with self.metrics_lock:
+            # Normalize the event type to handle different formats
+            normalized_type = event_type.lower()
+            
+            # Map to one of our allowed types
+            if normalized_type == "entry":
+                event_key = "entry"
+            elif normalized_type == "exit":
+                event_key = "exit"
+            else:
+                event_key = "unknown"
+                
+            # Increment the appropriate counter
+            self.footfall_counts[event_key] += 1
+            
+            # Add to hourly stats
+            hour_key = datetime.now().strftime("%Y-%m-%d %H:00")
+            self.hourly_stats[hour_key][event_key] += 1
+            
+            # Keep track of the last footfall type
+            self.last_footfall_type = event_key
+            
+            self.logger.info(f"Recorded footfall: {event_key}, total: {self.footfall_counts[event_key]}")
     
     def _monitor_detections(self):
         """
@@ -258,10 +301,12 @@ class DashboardManager:
                 ).strftime("%Y-%m-%d %H:%M:%S")
             
             return {
-                "total_detections": self.detection_count,
+                "detection_count": self.detection_count,
                 "direction_counts": self.direction_counts.copy(),
-                "last_detection_time": last_detection_time_str,
-                "last_direction": self.last_direction
+                "footfall_counts": self.footfall_counts.copy(),
+                "last_detection": last_detection_time_str,
+                "last_direction": self.last_direction,
+                "last_footfall_type": self.last_footfall_type
             }
     
     def get_current_status(self):
@@ -283,13 +328,13 @@ class DashboardManager:
     
     def get_footfall_count(self):
         """
-        Get the total footfall count (total number of detections)
+        Get the total entry/exit footfall counts
         
         Returns:
-            int: Footfall count
+            dict: Entry and exit counts
         """
         with self.metrics_lock:
-            return self.detection_count
+            return self.footfall_counts.copy()
             
     def get_detection_metrics_by_day(self, days=7):
         """

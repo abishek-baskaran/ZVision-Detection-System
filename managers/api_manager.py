@@ -147,12 +147,33 @@ class APIManager:
                     self.logger.error(f"Error getting dashboard summary: {e}")
                     dashboard_summary = {}
                 
+                # Get ROI configuration if available
+                roi_config = {}
+                try:
+                    roi_coords = self.detection_manager.get_roi()
+                    entry_direction = self.detection_manager.get_entry_direction()
+                    
+                    if roi_coords:
+                        x1, y1, x2, y2 = roi_coords
+                        roi_config = {
+                            "coords": {
+                                "x1": x1,
+                                "y1": y1,
+                                "x2": x2,
+                                "y2": y2
+                            },
+                            "entry_direction": entry_direction
+                        }
+                except Exception as e:
+                    self.logger.error(f"Error getting ROI configuration: {e}")
+                
                 # Combine all parts
                 status = {
                     "system": system_status,
                     "detection": detection_status,
                     "detection_active": detection_active,
-                    "dashboard": dashboard_summary
+                    "dashboard": dashboard_summary,
+                    "roi": roi_config
                 }
                 
                 return jsonify(status)
@@ -321,6 +342,36 @@ class APIManager:
             except Exception as e:
                 self.logger.error(f"Error starting detection: {e}")
                 return jsonify({"error": str(e)}), 500
+        
+        # ROI Configuration Endpoints
+        @self.app.route('/api/cameras/<int:cam_id>/roi', methods=['POST'])
+        def set_roi(cam_id):
+            try:
+                data = request.get_json()
+                roi = (data['x1'], data['y1'], data['x2'], data['y2'])
+                entry_dir = data['entry_direction']
+                
+                # Set ROI in detection manager
+                self.detection_manager.set_roi(roi)
+                self.detection_manager.set_entry_direction(entry_dir)
+                
+                self.logger.info(f"ROI set to {roi} and entry direction to {entry_dir} via API")
+                return jsonify({"success": True, "message": "ROI configuration saved"})
+            except Exception as e:
+                self.logger.error(f"Failed to save ROI: {e}")
+                return jsonify({"success": False, "error": str(e)}), 500
+        
+        @self.app.route('/api/cameras/<int:cam_id>/roi/clear', methods=['POST'])
+        def clear_roi(cam_id):
+            try:
+                # Clear ROI in detection manager
+                self.detection_manager.clear_roi()
+                
+                self.logger.info("ROI configuration cleared via API")
+                return jsonify({"success": True, "message": "ROI configuration cleared"})
+            except Exception as e:
+                self.logger.error(f"Failed to clear ROI: {e}")
+                return jsonify({"success": False, "error": str(e)}), 500
     
     def _generate_default_html(self):
         """

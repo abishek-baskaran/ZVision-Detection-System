@@ -19,6 +19,10 @@ class DetectionManager:
     DIRECTION_LEFT_TO_RIGHT = 1
     DIRECTION_RIGHT_TO_LEFT = 2
     
+    # Entry/Exit direction mapping constants
+    ENTRY_DIRECTION_LTR = "LTR"  # Left-to-right is entry
+    ENTRY_DIRECTION_RTL = "RTL"  # Right-to-left is entry
+    
     def __init__(self, resource_provider, camera_manager, dashboard_manager=None, db_manager=None):
         """
         Initialize the detection manager
@@ -54,12 +58,20 @@ class DetectionManager:
         self.person_detected = False
         self.last_detection_time = None
         self.current_direction = self.DIRECTION_UNKNOWN
+        self.no_person_counter = 0  # Count consecutive frames with no person
+        
+        # ROI and entry/exit direction configuration
+        self.roi_coords = None  # Format: (x1, y1, x2, y2)
+        self.entry_direction = None  # ENTRY_DIRECTION_LTR or ENTRY_DIRECTION_RTL
         
         # Load YOLOv8 model
         self._load_model()
         
         # Tracking history for determining direction
         self.position_history = deque(maxlen=20)  # Track recent positions for direction determination
+        
+        # Load ROI and entry direction settings from database if available
+        self._load_roi_settings()
         
         self.logger.info("DetectionManager initialized")
     
@@ -106,6 +118,7 @@ class DetectionManager:
                 self.person_detected = False
                 self.current_direction = self.DIRECTION_UNKNOWN
                 self.position_history.clear()
+                self.no_person_counter = 0
             
             self.logger.info("Detection thread stopped and state reset")
     
@@ -117,7 +130,6 @@ class DetectionManager:
         frame_interval_active = 1.0 / self.active_fps if self.active_fps > 0 else 0.2
         
         last_frame_time = 0
-        no_person_counter = 0  # Count consecutive frames with no person
         
         while self.is_running:
             try:
@@ -143,19 +155,18 @@ class DetectionManager:
                     continue
                 
                 # Run person detection
-                self._detect_and_track(frame, no_person_counter)
+                self._process_frame(frame)
                 
             except Exception as e:
                 self.logger.error(f"Error in detection loop: {e}")
                 time.sleep(0.1)
     
-    def _detect_and_track(self, frame, no_person_counter):
+    def _process_frame(self, frame):
         """
-        Detect persons in the frame and track their movement
+        Process a single frame: detect person and update state
         
         Args:
             frame: The frame to process
-            no_person_counter: Counter for consecutive frames with no person
         """
         if self.model is None:
             return
@@ -173,9 +184,20 @@ class DetectionManager:
                 # Check if detection is a person
                 cls = int(box.cls[0])
                 if cls == self.person_class_id:
-                    person_detected = True
                     # Get bounding box: x1, y1, x2, y2
                     xyxy = box.xyxy[0].cpu().numpy()
+                    
+                    # Check if person is within ROI if ROI is set
+                    if self.roi_coords:
+                        center_x = (xyxy[0] + xyxy[2]) / 2
+                        center_y = (xyxy[1] + xyxy[3]) / 2
+                        rx1, ry1, rx2, ry2 = self.roi_coords
+                        
+                        # Skip if person is outside ROI
+                        if not (rx1 <= center_x <= rx2 and ry1 <= center_y <= ry2):
+                            continue
+                    
+                    person_detected = True
                     person_bbox = xyxy
                     break
         
@@ -184,7 +206,7 @@ class DetectionManager:
             # Handle person appearance
             if person_detected:
                 now = time.time()
-                no_person_counter = 0
+                self.no_person_counter = 0
                 
                 # Handle transition from no person to person detected
                 if not self.person_detected:
@@ -213,27 +235,40 @@ class DetectionManager:
             else:
                 # No person detected in this frame
                 if self.person_detected:
-                    no_person_counter += 1
+                    self.no_person_counter += 1
                     # If person was present but now missing for a few frames, consider they disappeared
-                    if no_person_counter >= 5:  # 5 consecutive frames
+                    if self.no_person_counter >= 5:  # 5 consecutive frames
                         self.person_detected = False
                         direction_str = self._direction_to_string(self.current_direction)
+                        
+                        # Map direction to entry/exit if entry_direction is set
+                        event_type = "detection_end"
+                        if self.entry_direction and direction_str != "unknown":
+                            if direction_str == "left_to_right":
+                                event_type = "entry" if self.entry_direction == self.ENTRY_DIRECTION_LTR else "exit"
+                            elif direction_str == "right_to_left":
+                                event_type = "entry" if self.entry_direction == self.ENTRY_DIRECTION_RTL else "exit"
+                        
                         self.current_direction = self.DIRECTION_UNKNOWN
                         self.position_history.clear()
-                        self.logger.info(f"Person lost - switching to idle mode, last direction: {direction_str}")
+                        self.logger.info(f"Person lost - switching to idle mode, last direction: {direction_str}, event type: {event_type}")
                         
                         # Log to database if available
                         if self.db_manager:
-                            self.db_manager.log_detection_event("detection_end", direction=direction_str)
+                            self.db_manager.log_detection_event(event_type, direction=direction_str)
+                        
+                        # Update dashboard with entry/exit if available
+                        if self.dashboard_manager and hasattr(self.dashboard_manager, 'record_footfall'):
+                            self.dashboard_manager.record_footfall(event_type)
                         
                         # Emit socket event if API manager is available
                         if self.api_manager:
-                            self.api_manager.emit_event("detection_end", {
+                            self.api_manager.emit_event(event_type, {
                                 "message": "Person lost",
                                 "last_direction": direction_str,
+                                "event_type": event_type,
                                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
                             })
-                # else, if already in no-person state, just remain idle
     
     def _update_direction(self, bbox):
         """
@@ -339,4 +374,118 @@ class DetectionManager:
                 "person_detected": self.person_detected,
                 "last_detection_time": self.last_detection_time,
                 "direction": direction_str,
-            } 
+            }
+    
+    def _load_roi_settings(self):
+        """
+        Load ROI and entry direction settings from database
+        """
+        if self.db_manager:
+            try:
+                # Try loading from the new camera_config table first
+                roi_config = self.db_manager.get_camera_roi(0)  # Default camera ID
+                if roi_config:
+                    coords = roi_config["coords"]
+                    self.roi_coords = (coords["x1"], coords["y1"], coords["x2"], coords["y2"])
+                    self.entry_direction = roi_config["entry_direction"]
+                    self.logger.info(f"Loaded ROI coordinates: {self.roi_coords} and entry direction: {self.entry_direction}")
+                    return
+                
+                # Backward compatibility: Try loading from the old settings table
+                roi_str = self.db_manager.get_setting('roi_coords')
+                if roi_str and roi_str.strip():  # Check if string is not empty
+                    try:
+                        import json
+                        coords = json.loads(roi_str)
+                        if coords and len(coords) == 4:  # Validate tuple has 4 elements
+                            self.roi_coords = tuple(coords)
+                            self.logger.info(f"Loaded ROI coordinates from legacy settings: {self.roi_coords}")
+                            
+                            # Load entry direction from old settings
+                            self.entry_direction = self.db_manager.get_setting('entry_direction')
+                            if self.entry_direction:
+                                self.logger.info(f"Loaded entry direction from legacy settings: {self.entry_direction}")
+                            
+                            # Migrate to the new table
+                            self.db_manager.save_camera_roi(0, self.roi_coords, self.entry_direction)
+                            self.logger.info("Migrated ROI settings to new camera_config table")
+                        else:
+                            self.logger.warning(f"Invalid ROI coordinates format, expected 4 values: {coords}")
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"Could not parse ROI coordinates as JSON: {e}")
+            except Exception as e:
+                self.logger.error(f"Error loading ROI settings: {e}")
+                # Don't re-raise the exception - just log it
+    
+    def set_roi(self, roi_coords):
+        """
+        Set the Region of Interest coordinates
+        
+        Args:
+            roi_coords: Tuple of (x1, y1, x2, y2) defining the ROI rectangle
+        """
+        with self.state_lock:
+            self.roi_coords = roi_coords
+            
+            # Save to database if available
+            if self.db_manager:
+                # Save to the new camera_config table
+                self.db_manager.save_camera_roi(0, roi_coords, self.entry_direction or self.ENTRY_DIRECTION_LTR)
+                
+            self.logger.info(f"ROI set to {roi_coords}")
+    
+    def set_entry_direction(self, entry_direction):
+        """
+        Set which direction is considered as an entry
+        
+        Args:
+            entry_direction: Either ENTRY_DIRECTION_LTR or ENTRY_DIRECTION_RTL
+        """
+        if entry_direction not in [self.ENTRY_DIRECTION_LTR, self.ENTRY_DIRECTION_RTL]:
+            self.logger.error(f"Invalid entry direction: {entry_direction}")
+            return
+            
+        with self.state_lock:
+            self.entry_direction = entry_direction
+            
+            # Save to database if available
+            if self.db_manager and self.roi_coords:
+                # Update the entry direction in the camera_config table
+                self.db_manager.save_camera_roi(0, self.roi_coords, entry_direction)
+                
+            self.logger.info(f"Entry direction set to {entry_direction}")
+    
+    def get_roi(self):
+        """
+        Get the current ROI coordinates
+        
+        Returns:
+            tuple: The current ROI coordinates (x1, y1, x2, y2) or None if not set
+        """
+        with self.state_lock:
+            return self.roi_coords
+    
+    def get_entry_direction(self):
+        """
+        Get the current entry direction setting
+        
+        Returns:
+            str: The current entry direction setting or None if not set
+        """
+        with self.state_lock:
+            return self.entry_direction
+    
+    def clear_roi(self):
+        """
+        Clear the ROI setting
+        """
+        with self.state_lock:
+            self.roi_coords = None
+            self.entry_direction = None
+            
+            # Remove from database if available
+            if self.db_manager:
+                # Delete from the camera_config table
+                self.db_manager.delete_camera_roi(0)
+                
+            self.logger.info("ROI and entry direction cleared") 

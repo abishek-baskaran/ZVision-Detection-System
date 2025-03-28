@@ -176,6 +176,22 @@
             background-color: #f44336;
         }
         
+        /* ROI Canvas Styles */
+        #roi-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: crosshair;
+        }
+        
+        #roi-controls {
+            margin-top: 15px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        
         /* Responsive design */
         @media (max-width: 600px) {
             .container {
@@ -219,9 +235,19 @@
         
         <div class="card">
             <h3>Live Camera Feed</h3>
-            <img id="camera-feed" src="/video_feed" alt="Live camera feed">
+            <div style="position: relative; display: inline-block; margin: 0 auto;">
+                <img id="camera-feed" src="/video_feed" alt="Live camera feed">
+                <canvas id="roi-canvas" width="640" height="480"></canvas>
+            </div>
+            <p>Draw a box over the doorway area in the video feed. Select which direction counts as entry, then click "Save".</p>
+            <div id="roi-controls">
+                <label><input type="radio" name="entryDir" value="LTR" checked> Left-to-Right = Entry</label><br>
+                <label><input type="radio" name="entryDir" value="RTL"> Right-to-Left = Entry</label>
+            </div>
             <div class="buttons">
                 <button id="toggle-detect">Pause Detection</button>
+                <button id="save-roi">Save ROI Configuration</button>
+                <button id="reset-roi">Reset ROI</button>
             </div>
         </div>
         
@@ -248,9 +274,198 @@
         <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
         <script>
             // Track detection state
-            let detectionOn = true;
+            let detectionActive = true;
             let socketConnected = false;
             let socket;
+            
+            // ROI Canvas Setup
+            const canvas = document.getElementById('roi-canvas');
+            const ctx = canvas.getContext('2d');
+            let drawing = false;
+            let startX, startY;
+            
+            // Initialize canvas size to match the video feed
+            function resizeCanvas() {
+                const videoFeed = document.getElementById('camera-feed');
+                canvas.width = videoFeed.clientWidth;
+                canvas.height = videoFeed.clientHeight;
+                
+                // If we have a selected ROI, redraw it
+                if (window.selectedROI) {
+                    drawROI(window.selectedROI);
+                }
+            }
+            
+            // Helper function to draw ROI on the canvas
+            function drawROI(roi) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                if (roi) {
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                    ctx.fillRect(roi.x1, roi.y1, roi.x2 - roi.x1, roi.y2 - roi.y1);
+                    ctx.strokeStyle = 'red';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(roi.x1, roi.y1, roi.x2 - roi.x1, roi.y2 - roi.y1);
+                }
+            }
+            
+            // Initial resize and resize on window change
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Wait for the video to load and then resize the canvas
+            document.getElementById('camera-feed').onload = function() {
+                setTimeout(resizeCanvas, 100); // Short delay to ensure image has rendered
+            };
+
+            // Drawing functions for ROI
+            canvas.onmousedown = (e) => {
+                drawing = true;
+                const rect = canvas.getBoundingClientRect();
+                startX = e.clientX - rect.left;
+                startY = e.clientY - rect.top;
+            };
+
+            canvas.onmousemove = (e) => {
+                if (!drawing) return;
+                const rect = canvas.getBoundingClientRect();
+                const currX = e.clientX - rect.left;
+                const currY = e.clientY - rect.top;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(startX, startY, currX - startX, currY - startY);
+            };
+
+            canvas.onmouseup = (e) => {
+                drawing = false;
+                const rect = canvas.getBoundingClientRect();
+                const endX = e.clientX - rect.left;
+                const endY = e.clientY - rect.top;
+                const x1 = Math.min(startX, endX);
+                const y1 = Math.min(startY, endY);
+                const x2 = Math.max(startX, endX);
+                const y2 = Math.max(startY, endY);
+                
+                // Check if the box is too small (at least 10x10 pixels)
+                if (x2 - x1 < 10 || y2 - y1 < 10) {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    showNotification("ROI is too small. Please draw a larger box.", "error");
+                    return;
+                }
+                
+                // Store the ROI coordinates
+                window.selectedROI = { x1, y1, x2, y2 };
+                
+                // Draw the ROI
+                drawROI(window.selectedROI);
+                console.log("New ROI drawn:", window.selectedROI);
+            };
+            
+            // Save ROI Configuration
+            document.getElementById('save-roi').onclick = () => {
+                if (!window.selectedROI) {
+                    showNotification("No ROI selected. Please draw a box first.", "error");
+                    return;
+                }
+                const entryDir = document.querySelector('input[name="entryDir"]:checked').value;
+                const roiData = {
+                    x1: window.selectedROI.x1,
+                    y1: window.selectedROI.y1,
+                    x2: window.selectedROI.x2,
+                    y2: window.selectedROI.y2,
+                    entry_direction: entryDir
+                };
+                fetch('/api/cameras/0/roi', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(roiData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification("ROI configuration saved successfully.", "success");
+                    } else {
+                        showNotification("Failed to save ROI: " + (data.error || "Unknown error"), "error");
+                    }
+                })
+                .catch(error => {
+                    showNotification("Error saving ROI: " + error, "error");
+                });
+            };
+            
+            // Reset ROI Configuration
+            document.getElementById('reset-roi').onclick = () => {
+                fetch('/api/cameras/0/roi/clear', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification("ROI configuration reset. Detection will use the full frame.", "success");
+                        window.selectedROI = null;
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    } else {
+                        showNotification("Failed to reset ROI: " + (data.error || "Unknown error"), "error");
+                    }
+                })
+                .catch(error => {
+                    showNotification("Error resetting ROI: " + error, "error");
+                });
+            };
+            
+            // Apply ROI configuration on load
+            function loadCurrentROI() {
+                fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Check if there's ROI data in the status
+                    if (data.roi && data.roi.coords) {
+                        const r = data.roi.coords;
+                        
+                        // Make sure canvas is properly sized
+                        resizeCanvas();
+                        
+                        // Store the ROI coordinates
+                        window.selectedROI = {
+                            x1: r.x1, 
+                            y1: r.y1, 
+                            x2: r.x2, 
+                            y2: r.y2
+                        };
+                        
+                        // Draw the ROI on the canvas
+                        drawROI(window.selectedROI);
+                        console.log("Loaded ROI:", window.selectedROI);
+                        
+                        // Set the entry direction radio button
+                        const entryDir = data.roi.entry_direction || "LTR";
+                        const radioBtn = document.querySelector(`input[name="entryDir"][value="${entryDir}"]`);
+                        if (radioBtn) radioBtn.checked = true;
+                    } else {
+                        console.log("No ROI configuration found in status data");
+                    }
+                })
+                .catch(error => {
+                    console.error("Error loading ROI configuration:", error);
+                });
+            }
+            
+            // Additional notification function for ROI operations
+            function showNotification(message, type) {
+                const notification = document.getElementById('notification');
+                notification.textContent = message;
+                notification.className = 'notification show';
+                
+                if (type === 'success') {
+                    notification.style.backgroundColor = '#4CAF50';
+                } else if (type === 'error') {
+                    notification.style.backgroundColor = '#f44336';
+                } else {
+                    notification.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+                }
+                
+                setTimeout(() => {
+                    notification.classList.remove('show');
+                }, 3000);
+            }
             
             // Update system status
             function updateStatus() {
@@ -266,10 +481,10 @@
                     .then(data => {
                         console.log("Status data:", data);
                         // Update detection toggle button state based on server status
-                        detectionOn = data.detection_active;
+                        detectionActive = data.detection_active;
                         const toggleBtn = document.getElementById('toggle-detect');
-                        toggleBtn.innerText = detectionOn ? 'Pause Detection' : 'Resume Detection';
-                        toggleBtn.className = detectionOn ? '' : 'inactive';
+                        toggleBtn.innerText = detectionActive ? 'Pause Detection' : 'Resume Detection';
+                        toggleBtn.className = detectionActive ? '' : 'inactive';
                         
                         let statusHTML = '<p><strong>Time:</strong> ' + data.system.timestamp + '</p>';
                         
@@ -286,7 +501,7 @@
                         statusHTML += '</p>';
                         
                         // Only show person detection state if detection is active
-                        if (detectionOn) {
+                        if (detectionActive) {
                             statusHTML += '<p><strong>Person Detected:</strong> ';
                             if (data.detection.person_detected) {
                                 statusHTML += '<span class="status-indicator status-active"></span>Yes';
@@ -470,7 +685,7 @@
             
             // Toggle detection on/off
             function toggleDetection() {
-                const url = detectionOn ? '/api/detection/stop' : '/api/detection/start';
+                const url = detectionActive ? '/api/detection/stop' : '/api/detection/start';
                 fetch(url, { method: 'POST' })
                     .then(res => res.json())
                     .then(data => {
@@ -478,35 +693,20 @@
                             alert("Failed to toggle detection: " + data.error);
                             return;
                         }
-                        detectionOn = !detectionOn;
+                        detectionActive = !detectionActive;
                         // Update button text and class
                         const toggleBtn = document.getElementById('toggle-detect');
-                        toggleBtn.innerText = detectionOn ? 'Pause Detection' : 'Resume Detection';
-                        toggleBtn.className = detectionOn ? '' : 'inactive';
+                        toggleBtn.innerText = detectionActive ? 'Pause Detection' : 'Resume Detection';
+                        toggleBtn.className = detectionActive ? '' : 'inactive';
                         // Update status to reflect the change
                         updateStatus();
                         // Show notification
-                        showNotification(detectionOn ? 'Detection started' : 'Detection paused', detectionOn ? 'detection-start' : 'detection-end');
+                        showNotification(detectionActive ? 'Detection started' : 'Detection paused', detectionActive ? 'detection-start' : 'detection-end');
                     })
                     .catch(err => {
                         console.error('Error toggling detection:', err);
                         alert('Failed to toggle detection: ' + err.message);
                     });
-            }
-            
-            // Show notification
-            function showNotification(message, type) {
-                const notification = document.getElementById('notification');
-                notification.textContent = message;
-                notification.className = `notification ${type} show`;
-                
-                // Add event to log
-                addEventToLog(message);
-                
-                // Hide after 3 seconds
-                setTimeout(() => {
-                    notification.className = 'notification';
-                }, 3000);
             }
             
             // Add event to log
@@ -619,6 +819,9 @@
                         this.style.opacity = this.style.opacity === '0' ? '1' : '0';
                     }
                 });
+                
+                // Load any existing ROI configuration
+                loadCurrentROI();
                 
                 // Initialize real-time connection after initial updates
                 setTimeout(() => initSocketIO(), 1000);

@@ -161,6 +161,8 @@ The system provides the following RESTful API endpoints:
 | `/api/detection/start` | POST | Start the detection process |
 | `/api/detection/stop` | POST | Stop the detection process |
 | `/api/frame/current` | GET | Current camera frame as JPEG image |
+| `/api/cameras/<camera_id>/roi` | POST | Set ROI configuration with coordinates and entry direction |
+| `/api/cameras/<camera_id>/roi/clear` | POST | Clear ROI configuration |
 | `/video_feed` | GET | MJPEG streaming video feed |
 
 ## WebSocket Notifications
@@ -245,6 +247,52 @@ The system uses threading for concurrency, with separate threads for:
 - **RESTful API**: Integration with other systems
 - **Database Logging**: Persistent storage of all detection events
 - **Configurable**: Easily adjust all parameters via config.yaml
+- **Region of Interest (ROI)**: Define specific areas for detection to reduce false positives and enable targeted counting
+- **Entry/Exit Direction Mapping**: Configure which direction counts as entry vs exit
+
+## Region of Interest (ROI) Configuration
+
+The system supports defining a Region of Interest (ROI) to limit detections to specific areas of the camera view:
+
+### Features
+
+- **Visual ROI Selection**: Draw a box directly on the video feed to define the detection area
+- **Direction Mapping**: Configure whether left-to-right or right-to-left movement counts as entry
+- **Persistence**: ROI settings are saved to the database and automatically applied on restart
+- **API Integration**: ROI can be set/cleared via API endpoints
+
+### ROI Interface
+
+Access the ROI configuration interface through the main dashboard. To configure:
+
+1. Draw a box over the area where you want to detect people (e.g., a doorway)
+2. Select which direction should count as an "entry" (left-to-right or right-to-left)
+3. Click "Save ROI Configuration" to apply and store settings
+4. Click "Reset ROI" to return to full-frame detection
+
+### ROI API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/cameras/<camera_id>/roi` | POST | Set ROI configuration with coordinates and entry direction |
+| `/api/cameras/<camera_id>/roi/clear` | POST | Clear ROI configuration and return to full-frame detection |
+| `/api/status` | GET | Includes current ROI configuration in response |
+
+### Example ROI Configuration
+
+```json
+{
+  "x1": 100,
+  "y1": 50,
+  "x2": 300,
+  "y2": 400,
+  "entry_direction": "LTR"
+}
+```
+
+This configuration:
+- Limits detection to the rectangle defined by (100,50) to (300,400)
+- Defines left-to-right movement as "entry" and right-to-left as "exit"
 
 ## Troubleshooting
 

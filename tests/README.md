@@ -22,6 +22,8 @@ The testing tools help verify that the ZVision system performs correctly accordi
 
 - **performance/test_performance.py**: Automated script to test various aspects of the system
 - **manual/test_checklist.md**: Manual test checklist for verifying functionality
+- **manual/test_roi_persistence.py**: Test script for verifying ROI persistence functionality
+- **unit/test_roi_api.py**: Unit tests for ROI API endpoints
 - **scripts/install_test_dependencies.sh**: Script to install required dependencies
 
 ## Getting Started
@@ -66,6 +68,24 @@ You can also specify a different host or port:
 ```bash
 python tests/performance/test_performance.py --host 192.168.1.100 --port 5000
 ```
+
+### ROI Feature Tests
+
+To test the Region of Interest functionality:
+
+```bash
+# Unit tests for ROI API endpoints
+python -m unittest tests/unit/test_roi_api.py
+
+# Test ROI persistence functionality
+python tests/manual/test_roi_persistence.py
+```
+
+The ROI persistence test verifies:
+- Database schema for ROI configuration
+- API endpoints for setting/clearing ROI
+- Loading ROI settings on system startup
+- Inclusion of ROI in status endpoint
 
 ### Manual Testing
 

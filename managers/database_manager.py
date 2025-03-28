@@ -91,6 +91,18 @@ class DatabaseManager:
                 )
                 ''')
                 
+                # Create camera_config table for ROI and direction settings
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS camera_config (
+                    camera_id TEXT PRIMARY KEY,
+                    roi_x1 INTEGER,
+                    roi_y1 INTEGER,
+                    roi_x2 INTEGER,
+                    roi_y2 INTEGER,
+                    entry_direction TEXT
+                )
+                ''')
+                
                 conn.commit()
                 conn.close()
                 
@@ -389,4 +401,96 @@ class DatabaseManager:
         """
         # Since we're using connection per operation, this is just a placeholder
         # If we switch to a persistent connection, we would close it here
-        self.logger.info("Database manager closed") 
+        self.logger.info("Database manager closed")
+    
+    def save_camera_roi(self, camera_id, roi, entry_dir):
+        """
+        Save ROI and entry direction settings for a camera
+        
+        Args:
+            camera_id: Camera identifier (number or string)
+            roi: Tuple of (x1, y1, x2, y2) defining the ROI rectangle
+            entry_dir: Direction considered as entry (LTR or RTL)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO camera_config 
+                    (camera_id, roi_x1, roi_y1, roi_x2, roi_y2, entry_direction)
+                    VALUES (?, ?, ?, ?, ?, ?);
+                """, (str(camera_id), roi[0], roi[1], roi[2], roi[3], entry_dir))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Saved ROI configuration for camera {camera_id}: {roi}, entry_direction: {entry_dir}")
+                return True
+            except Exception as e:
+                self.logger.error(f"Error saving camera ROI configuration: {e}")
+                return False
+    
+    def get_camera_roi(self, camera_id):
+        """
+        Get ROI and entry direction settings for a camera
+        
+        Args:
+            camera_id: Camera identifier (number or string)
+            
+        Returns:
+            dict: Dictionary with ROI coordinates and entry direction, or None if not found
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT roi_x1, roi_y1, roi_x2, roi_y2, entry_direction 
+                    FROM camera_config 
+                    WHERE camera_id = ?;
+                """, (str(camera_id),))
+                
+                row = cursor.fetchone()
+                conn.close()
+                
+                if row:
+                    x1, y1, x2, y2, entry_dir = row
+                    return {"coords": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, "entry_direction": entry_dir}
+                else:
+                    return None
+            except Exception as e:
+                self.logger.error(f"Error retrieving camera ROI configuration: {e}")
+                return None
+    
+    def delete_camera_roi(self, camera_id):
+        """
+        Delete ROI and entry direction settings for a camera
+        
+        Args:
+            camera_id: Camera identifier (number or string)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("DELETE FROM camera_config WHERE camera_id = ?;", (str(camera_id),))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Deleted ROI configuration for camera {camera_id}")
+                return True
+            except Exception as e:
+                self.logger.error(f"Error deleting camera ROI configuration: {e}")
+                return False 
