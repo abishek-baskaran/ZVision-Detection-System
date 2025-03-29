@@ -17,6 +17,7 @@ The testing tools help verify that the ZVision system performs correctly accordi
 3. API responsiveness under load
 4. Detection and tracking functionality
 5. Database logging verification
+6. Multi-camera analytics functionality
 
 ## Test Components
 
@@ -24,6 +25,7 @@ The testing tools help verify that the ZVision system performs correctly accordi
 - **manual/test_checklist.md**: Manual test checklist for verifying functionality
 - **manual/test_roi_persistence.py**: Test script for verifying ROI persistence functionality
 - **unit/test_roi_api.py**: Unit tests for ROI API endpoints
+- **unit/test_analytics_engine.py**: Unit tests for analytics engine functionality
 - **scripts/install_test_dependencies.sh**: Script to install required dependencies
 
 ## Getting Started
@@ -87,6 +89,27 @@ The ROI persistence test verifies:
 - Loading ROI settings on system startup
 - Inclusion of ROI in status endpoint
 
+### Analytics Engine Tests
+
+To test the Analytics Engine functionality:
+
+```bash
+# Unit tests for analytics engine functionality
+python -m unittest tests/unit/test_analytics_engine.py
+
+# Test analytics API endpoints
+curl -s http://localhost:5000/api/analytics/compare | python -m json.tool
+curl -s http://localhost:5000/api/analytics/time-series | python -m json.tool
+curl -s http://localhost:5000/api/analytics/heatmap?camera=main | python -m json.tool
+```
+
+The analytics engine tests verify:
+- Retrieval of camera entry/exit counts
+- Time series data generation for detection events
+- Heatmap visualization data
+- Proper integration with the database
+- Correct response formatting for API endpoints
+
 ### Manual Testing
 
 Use the `manual/test_checklist.md` file as a guide for manual testing. This checklist covers:
@@ -98,6 +121,7 @@ Use the `manual/test_checklist.md` file as a guide for manual testing. This chec
 - Concurrent operation testing
 - WebSocket notifications
 - UI responsiveness
+- Analytics functionality verification
 - Performance optimization suggestions
 
 ## Interpreting Results

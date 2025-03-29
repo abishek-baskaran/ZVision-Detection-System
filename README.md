@@ -11,6 +11,7 @@ ZVision is a comprehensive detection system that leverages computer vision to:
 3. Count footfall (number of people passing by)
 4. Provide real-time WebSocket notifications
 5. Offer a web dashboard for monitoring
+6. Support multi-camera analytics and comparisons
 
 The system is optimized for Raspberry Pi and balances performance with accuracy by using adaptive processing rates based on detection state.
 
@@ -23,6 +24,7 @@ zvision/
 ├── start_server.py        # Server startup script with threading mode
 ├── managers/              # Core system components
 │   ├── api_manager.py     # API and WebSocket server
+│   ├── analytics_engine.py # Analytics data processing
 │   ├── camera_manager.py  # Camera feed handling
 │   ├── dashboard_manager.py # Dashboard data processing
 │   ├── database_manager.py # SQLite database management
@@ -157,6 +159,9 @@ The system provides the following RESTful API endpoints:
 | `/api/metrics` | GET | System metrics including hourly data and footfall count |
 | `/api/metrics/daily` | GET | Metrics aggregated by day |
 | `/api/metrics/summary` | GET | Cumulative metrics over time by direction |
+| `/api/analytics/compare` | GET | Compare metrics across multiple cameras |
+| `/api/analytics/time-series` | GET | Get time-series data for one or all cameras |
+| `/api/analytics/heatmap` | GET | Get heatmap visualization data for camera movement |
 | `/api/settings` | GET | System settings from config |
 | `/api/detection/start` | POST | Start the detection process |
 | `/api/detection/stop` | POST | Stop the detection process |
@@ -164,6 +169,9 @@ The system provides the following RESTful API endpoints:
 | `/api/cameras/<camera_id>/roi` | POST | Set ROI configuration with coordinates and entry direction |
 | `/api/cameras/<camera_id>/roi/clear` | POST | Clear ROI configuration |
 | `/video_feed` | GET | MJPEG streaming video feed |
+| `/video_feed/<camera_id>` | GET | MJPEG streaming video feed for specific camera |
+| `/api/cameras` | GET | List all configured cameras |
+| `/api/cameras/<camera_id>` | GET | Get details for a specific camera |
 
 ## WebSocket Notifications
 
@@ -231,6 +239,7 @@ ZVision follows a modular design pattern with these key components:
 - **DashboardManager**: Aggregates metrics and analytics
 - **DatabaseManager**: Handles persistent storage of events
 - **APIManager**: Provides web dashboard and REST API with WebSocket
+- **AnalyticsEngine**: Processes and provides analytics data for multiple cameras
 
 The system uses threading for concurrency, with separate threads for:
 - Camera frame capture
@@ -249,6 +258,10 @@ The system uses threading for concurrency, with separate threads for:
 - **Configurable**: Easily adjust all parameters via config.yaml
 - **Region of Interest (ROI)**: Define specific areas for detection to reduce false positives and enable targeted counting
 - **Entry/Exit Direction Mapping**: Configure which direction counts as entry vs exit
+- **Multi-Camera Support**: Connect and manage multiple camera feeds
+- **Camera Comparison Analytics**: Compare metrics between different cameras
+- **Time Series Analysis**: View detection trends over time
+- **Movement Heatmaps**: Visualize areas with the most movement activity
 
 ## Region of Interest (ROI) Configuration
 
@@ -301,6 +314,74 @@ This configuration:
 - **Performance**: If CPU usage is high, try a smaller model or reduce resolution/FPS
 - **WebSocket**: If notifications aren't working, check browser console for connection errors
 - **API Access**: For remote access, ensure the host is set to "0.0.0.0" in config.yaml
+
+## Analytics
+
+The system includes an analytics engine that provides advanced insights into people detection and movement patterns across multiple cameras.
+
+### Key Analytics Features
+
+- **Camera Comparison**: Compare entry/exit counts across all cameras
+- **Time Series Analysis**: View detection trends with hourly or daily resolution
+- **Movement Heatmaps**: Visualize high-traffic areas within the camera view
+- **Customizable Time Windows**: Filter analytics by different time periods
+
+### Analytics API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/analytics/compare` | GET | Compare metrics across all cameras over a specified time period |
+| `/api/analytics/time-series` | GET | Get hourly/daily data for all cameras or filtered by camera |
+| `/api/analytics/heatmap` | GET | Get movement heatmap data for a specific camera |
+
+### Example Usage
+
+**Compare cameras over last 24 hours:**
+```
+GET /api/analytics/compare
+```
+Response:
+```json
+{
+  "time_period": "Last 24 hours",
+  "camera_counts": {
+    "main": 12,
+    "secondary": 8,
+    "entrance": 15
+  },
+  "total": 35
+}
+```
+
+**Get time series for a specific camera:**
+```
+GET /api/analytics/time-series?camera=main
+```
+Response:
+```json
+{
+  "time_period": "Last 24 hours",
+  "data": [
+    {"hour": "2025-03-29 10:00", "count": 3},
+    {"hour": "2025-03-29 11:00", "count": 5},
+    {"hour": "2025-03-29 12:00", "count": 4}
+  ]
+}
+```
+
+**Get heatmap for camera movement:**
+```
+GET /api/analytics/heatmap?camera=main
+```
+Response:
+```json
+{
+  "camera_id": "main",
+  "width": 10,
+  "height": 10,
+  "heatmap": [[0,0,0...], [0,5,2...], ...]
+}
+```
 
 ## License
 
