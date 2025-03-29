@@ -6,6 +6,7 @@ This directory contains tools and guides for manually testing the ZVision detect
 
 - **test_roi_persistence.py**: Tests ROI persistence functionality and database integration
 - **test_roi_html_interface.py**: Tests the HTML interface for drawing and configuring ROI
+- **test_analytics_endpoints.py**: Tests the analytics endpoints for multi-camera data
 
 ## Running the Tests
 
@@ -39,6 +40,22 @@ This test:
 - Tests saving and loading ROI configuration
 - Verifies direction selection controls
 
+### Analytics Endpoints Test
+
+Tests the analytics API endpoints:
+
+```bash
+# Run from project root
+python tests/manual/test_analytics_endpoints.py
+```
+
+This test:
+- Verifies the compare endpoint for cross-camera metrics
+- Tests time-series data for hourly detection trends
+- Confirms heatmap data generation for movement visualization
+- Checks camera-specific filtering functionality
+- Validates time period parameter handling
+
 ## Manual Testing Checklist
 
 To manually test the ROI functionality:
@@ -63,6 +80,26 @@ To manually test the ROI functionality:
    - Verify detection only occurs within the configured ROI
    - Verify people outside the ROI are not counted
    - Reset the ROI and verify detection returns to full-frame
+
+To manually test the Analytics functionality:
+
+1. **Compare Endpoint**
+   - Access `/api/analytics/compare` via browser or curl
+   - Verify that metrics for all cameras are included
+   - Check that totals are calculated correctly
+   - Test with different time period parameters
+
+2. **Time Series Endpoint**
+   - Access `/api/analytics/time-series` for all cameras
+   - Test camera-specific filtering with the camera parameter
+   - Verify hourly data points are provided in chronological order
+   - Check that data points include both hour and count values
+
+3. **Heatmap Endpoint**
+   - Access `/api/analytics/heatmap?camera=main`
+   - Verify the heatmap dimensions match the requested width/height
+   - Check that the data format is a 2D matrix of numeric values
+   - Test with different width/height parameters
 
 ## Troubleshooting
 
