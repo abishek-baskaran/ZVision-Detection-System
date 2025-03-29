@@ -31,13 +31,20 @@ class CameraManager:
         
         # Check if device_id is an RTSP URL
         self.is_ip_camera = False
-        if isinstance(self.device_id, str) and (
-            self.device_id.startswith('rtsp://') or 
-            self.device_id.startswith('http://') or 
-            self.device_id.startswith('https://')
-        ):
-            self.is_ip_camera = True
-            self.logger.info(f"IP camera detected with URL: {self.device_id}")
+        self.is_video_file = False
+        
+        if isinstance(self.device_id, str):
+            if (self.device_id.startswith('rtsp://') or 
+                self.device_id.startswith('http://') or 
+                self.device_id.startswith('https://')):
+                self.is_ip_camera = True
+                self.logger.info(f"IP camera detected with URL: {self.device_id}")
+            elif (self.device_id.endswith('.mp4') or 
+                  self.device_id.endswith('.avi') or 
+                  self.device_id.endswith('.mov') or 
+                  self.device_id.endswith('.mkv')):
+                self.is_video_file = True
+                self.logger.info(f"Video file detected: {self.device_id}")
         
         # Frame queue with maximum size of 1 to always have the latest frame
         self.frame_queue = queue.Queue(maxsize=1)
@@ -76,9 +83,28 @@ class CameraManager:
         Stop the camera capture thread
         """
         self.is_running = False
-        if self.thread:
-            self.thread.join(timeout=1.0)
+        
+        # Set max wait time to 2 seconds total (try 4 times with 0.5s)
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            if self.thread and self.thread.is_alive():
+                try:
+                    self.thread.join(timeout=0.5)
+                    if not self.thread.is_alive():
+                        break
+                except Exception as e:
+                    self.logger.error(f"Error joining camera thread: {e}")
+            else:
+                break
+        
+        # If thread is still alive after timeout, log a warning
+        if self.thread and self.thread.is_alive():
+            self.logger.warning("Camera thread did not terminate properly. This could lead to resource leaks.")
+        else:
             self.logger.info("Camera capture thread stopped")
+        
+        # Reset thread reference to avoid join attempts on non-existent thread
+        self.thread = None
     
     def _capture_loop(self):
         """
@@ -87,88 +113,183 @@ class CameraManager:
         # Initialize camera
         cap = None
         retry_count = 0
+        video_finished = False
         
-        while self.is_running and retry_count < self.max_retries:
-            try:
-                # Open camera
-                if cap is None:
-                    self.logger.info(f"Opening camera source: {self.device_id}")
-                    cap = cv2.VideoCapture(self.device_id)
+        # Variables for video file FPS control
+        video_fps = self.fps  # Default to config FPS
+        frame_delay = 1.0 / video_fps  # Time between frames
+        last_frame_time = time.time()
+        
+        try:
+            while self.is_running and retry_count < self.max_retries and not video_finished:
+                try:
+                    # Check if running again before opening camera
+                    if not self.is_running:
+                        break
+                        
+                    # Open camera
+                    if cap is None:
+                        self.logger.info(f"Opening camera source: {self.device_id}")
+                        cap = cv2.VideoCapture(self.device_id)
+                        
+                        # Set properties for non-IP cameras and non-video files
+                        if not self.is_ip_camera and not self.is_video_file:
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                            cap.set(cv2.CAP_PROP_FPS, self.fps)
+                        
+                        # For video files, get the actual FPS from the file
+                        if self.is_video_file:
+                            video_fps = cap.get(cv2.CAP_PROP_FPS)
+                            if video_fps <= 0:  # Invalid FPS
+                                video_fps = self.fps  # Fall back to config
+                            frame_delay = 1.0 / video_fps
+                            self.logger.info(f"Video file FPS: {video_fps}, frame delay: {frame_delay:.4f}s")
                     
-                    # Set properties for non-IP cameras
-                    if not self.is_ip_camera:
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                        cap.set(cv2.CAP_PROP_FPS, self.fps)
-                
-                if not cap.isOpened():
-                    self.logger.error(f"Failed to open camera {self.device_id}")
-                    retry_count += 1
-                    if retry_count < self.max_retries:
-                        self.logger.info(f"Retrying in {self.retry_delay} seconds... (Attempt {retry_count}/{self.max_retries})")
-                        time.sleep(self.retry_delay)
-                    continue
-                
-                # Reset retry count on successful connection
-                retry_count = 0
-                self.logger.info(f"Camera opened successfully")
-                
-                # Start capturing frames
-                while self.is_running:
-                    try:
-                        # Read frame from camera
-                        ret, frame = cap.read()
-                        
-                        if not ret:
-                            self.logger.warning("Failed to read frame from camera")
+                    # Check camera opened successfully
+                    if not cap.isOpened():
+                        self.logger.error(f"Failed to open camera {self.device_id}")
+                        retry_count += 1
+                        if retry_count < self.max_retries and self.is_running:
+                            self.logger.info(f"Retrying in {self.retry_delay} seconds... (Attempt {retry_count}/{self.max_retries})")
                             
-                            # For IP cameras, try to reconnect
-                            if self.is_ip_camera:
-                                self.logger.info("Attempting to reconnect to IP camera...")
-                                cap.release()
-                                cap = None
-                                break
+                            # Break retry delay into small chunks to check is_running
+                            for _ in range(int(self.retry_delay * 10)):
+                                if not self.is_running:
+                                    break
+                                time.sleep(0.1)
+                                
+                        if cap is not None:
+                            cap.release()
+                            cap = None
+                        continue
+                    
+                    # Reset retry count on successful connection
+                    retry_count = 0
+                    self.logger.info(f"Camera opened successfully")
+                    
+                    # For video files, special handling for looping or ending
+                    if self.is_video_file:
+                        # Get video file details
+                        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        self.logger.info(f"Video file has {frame_count} frames, playing at {video_fps} FPS")
+                    
+                    # Current FPS tracking
+                    frame_count = 0
+                    fps_start_time = time.time()
+                    self.current_fps = 0
+                    
+                    # Start capturing frames
+                    consecutive_failures = 0
+                    while self.is_running:
+                        # Check if we should exit
+                        if not self.is_running:
+                            break
+                        
+                        # For video files, control playback speed to match video FPS
+                        if self.is_video_file:
+                            current_time = time.time()
+                            elapsed = current_time - last_frame_time
                             
-                            time.sleep(0.1)
-                            continue
-                        
-                        # Resize frame if dimensions don't match expected size
-                        if self.is_ip_camera and (frame.shape[1] != self.width or frame.shape[0] != self.height):
-                            frame = cv2.resize(frame, (self.width, self.height))
-                        
-                        # Update latest frame with thread safety
-                        with self.frame_lock:
-                            self.latest_frame = frame.copy()
-                        
-                        # Put frame in queue, replacing any existing frame
+                            # If it's not time for the next frame yet, wait
+                            if elapsed < frame_delay:
+                                sleep_time = min(frame_delay - elapsed, 0.01)  # Max 10ms sleep for responsiveness
+                                time.sleep(sleep_time)
+                                continue
+                            
                         try:
-                            # Put without blocking, drop oldest frame if queue is full
-                            self.frame_queue.put(frame, block=False)
-                        except queue.Full:
-                            # If queue is full, get the old frame to make space
-                            _ = self.frame_queue.get()
-                            # Then put the new frame
-                            self.frame_queue.put(frame)
+                            # Read frame from camera
+                            ret, frame = cap.read()
                             
-                    except Exception as e:
-                        self.logger.error(f"Error in camera capture loop: {e}")
-                        time.sleep(0.1)
-                
-            except Exception as e:
-                self.logger.error(f"Camera connection error: {e}")
-                retry_count += 1
-                if retry_count < self.max_retries:
-                    self.logger.info(f"Retrying in {self.retry_delay} seconds... (Attempt {retry_count}/{self.max_retries})")
-                    time.sleep(self.retry_delay)
-                if cap is not None:
-                    cap.release()
-                    cap = None
-        
-        # Release camera resources
-        if cap is not None:
-            cap.release()
+                            if not ret:
+                                self.logger.warning("Failed to read frame from camera")
+                                consecutive_failures += 1
+                                
+                                # For video files, it's normal to reach the end
+                                if self.is_video_file:
+                                    self.logger.info("End of video file reached, restarting from beginning")
+                                    # Reopen video
+                                    if cap is not None:
+                                        cap.release()
+                                    cap = cv2.VideoCapture(self.device_id)
+                                    if not cap.isOpened():
+                                        self.logger.error(f"Failed to reopen video file {self.device_id}")
+                                        video_finished = True
+                                        break
+                                    consecutive_failures = 0
+                                # For IP cameras, try to reconnect
+                                elif self.is_ip_camera or consecutive_failures > 10:
+                                    self.logger.info("Too many consecutive failures, reconnecting...")
+                                    
+                                    # Clean release of camera
+                                    if cap is not None:
+                                        cap.release()
+                                        cap = None
+                                    break
+                                
+                                # Check if running before sleep
+                                if not self.is_running:
+                                    break
+                                time.sleep(0.1)
+                                continue
+                            
+                            # Reset consecutive failures when we get a good frame
+                            consecutive_failures = 0
+                            
+                            # Update last frame time for video FPS control
+                            if self.is_video_file:
+                                last_frame_time = time.time()
+                            
+                            # Resize frame if dimensions don't match expected size
+                            if self.is_ip_camera and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                                frame = cv2.resize(frame, (self.width, self.height))
+                            
+                            # Update latest frame with thread safety
+                            with self.frame_lock:
+                                self.latest_frame = frame.copy()
+                            
+                            # Put frame in queue, replacing any existing frame
+                            try:
+                                # Put without blocking, drop oldest frame if queue is full
+                                self.frame_queue.put(frame, block=False)
+                            except queue.Full:
+                                # If queue is full, get the old frame to make space
+                                _ = self.frame_queue.get()
+                                # Then put the new frame
+                                self.frame_queue.put(frame)
+                                
+                        except Exception as e:
+                            self.logger.error(f"Error in camera capture loop: {e}")
+                            
+                            # Check if running before sleep
+                            if not self.is_running:
+                                break
+                            time.sleep(0.1)
+                    
+                except Exception as e:
+                    self.logger.error(f"Camera connection error: {e}")
+                    retry_count += 1
+                    
+                    if retry_count < self.max_retries and self.is_running:
+                        self.logger.info(f"Retrying in {self.retry_delay} seconds... (Attempt {retry_count}/{self.max_retries})")
+                        
+                        # Break retry delay into small chunks to check is_running
+                        for _ in range(int(self.retry_delay * 10)):
+                            if not self.is_running:
+                                break
+                            time.sleep(0.1)
+                    
+                    # Clean up camera resources
+                    if cap is not None:
+                        cap.release()
+                        cap = None
             
-        self.logger.info("Camera resources released")
+        finally:
+            # Final cleanup - ensure camera is released
+            if cap is not None:
+                cap.release()
+                
+            self.logger.info("Camera resources released")
     
     def get_frame(self, block=False, timeout=None):
         """

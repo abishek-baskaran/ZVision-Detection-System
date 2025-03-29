@@ -71,6 +71,18 @@ class DatabaseManager:
                 )
                 ''')
                 
+                # Ensure the detection_events table has a camera_id column
+                try:
+                    cursor.execute("SELECT camera_id FROM detection_events LIMIT 1")
+                except sqlite3.OperationalError:
+                    # Column doesn't exist, add it
+                    cursor.execute("ALTER TABLE detection_events ADD COLUMN camera_id TEXT")
+                
+                # Create index on camera_id and timestamp for faster analytics queries
+                cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_camera_ts ON detection_events(camera_id, timestamp)
+                ''')
+                
                 # Create system logs table
                 cursor.execute('''
                 CREATE TABLE IF NOT EXISTS system_logs (
@@ -100,6 +112,21 @@ class DatabaseManager:
                     roi_x2 INTEGER,
                     roi_y2 INTEGER,
                     entry_direction TEXT
+                )
+                ''')
+                
+                # Create cameras table if it doesn't exist
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cameras (
+                    camera_id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    name TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    fps INTEGER,
+                    enabled INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
                 ''')
                 
@@ -147,7 +174,7 @@ class DatabaseManager:
                 self.logger.error(f"Error logging event: {e}")
                 return False
     
-    def log_detection_event(self, event_type, direction=None, confidence=None, details=None):
+    def log_detection_event(self, event_type, direction=None, confidence=None, details=None, camera_id=None):
         """
         Log a detection event to the database
         
@@ -156,6 +183,7 @@ class DatabaseManager:
             direction: Movement direction (e.g., 'left_to_right', 'right_to_left', 'unknown')
             confidence: Detection confidence (float)
             details: Additional details (JSON string or text)
+            camera_id: ID of the camera that generated the event
             
         Returns:
             bool: True if successful, False otherwise
@@ -165,18 +193,27 @@ class DatabaseManager:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 
+                # Ensure the detection_events table has a camera_id column
+                try:
+                    cursor.execute("SELECT camera_id FROM detection_events LIMIT 1")
+                except sqlite3.OperationalError:
+                    # Column doesn't exist, add it
+                    self.logger.info("Adding camera_id column to detection_events table")
+                    cursor.execute("ALTER TABLE detection_events ADD COLUMN camera_id TEXT")
+                    conn.commit()
+                
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 cursor.execute(
-                    "INSERT INTO detection_events (timestamp, event_type, direction, confidence, details) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (timestamp, event_type, direction, confidence, details)
+                    "INSERT INTO detection_events (timestamp, event_type, direction, confidence, details, camera_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (timestamp, event_type, direction, confidence, details, camera_id)
                 )
                 
                 conn.commit()
                 conn.close()
                 
-                self.logger.debug(f"Logged detection event: {event_type}, direction: {direction}")
+                self.logger.debug(f"Logged detection event: {event_type}, direction: {direction}, camera: {camera_id}")
                 return True
                 
             except Exception as e:
@@ -189,7 +226,7 @@ class DatabaseManager:
         
         Args:
             level: Log level (e.g., 'INFO', 'ERROR')
-            module: Module name
+            module: Module or component generating the log
             message: Log message
             
         Returns:
@@ -493,4 +530,259 @@ class DatabaseManager:
                 return True
             except Exception as e:
                 self.logger.error(f"Error deleting camera ROI configuration: {e}")
+                return False
+    
+    # Alias for delete_camera_roi for API compatibility
+    def clear_roi(self, camera_id):
+        """
+        Clear ROI and entry direction settings for a camera (alias for delete_camera_roi)
+        
+        Args:
+            camera_id: Camera identifier (number or string)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self.delete_camera_roi(camera_id)
+    
+    def add_camera(self, camera_id, source, name=None, width=None, height=None, fps=None):
+        """
+        Add a camera configuration to the database
+        
+        Args:
+            camera_id: ID of the camera
+            source: Camera source (device ID or URL)
+            name: Camera name
+            width: Camera width
+            height: Camera height
+            fps: Camera FPS
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Add to cameras table (for backward compatibility)
+                cursor.execute("""
+                INSERT OR REPLACE INTO cameras 
+                (camera_id, source, name, width, height, fps, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+                """, (str(camera_id), source, name, width, height, fps))
+                
+                # Also update camera_config table to ensure both tables have the camera info
+                # First check if camera exists in camera_config
+                cursor.execute("SELECT camera_id FROM camera_config WHERE camera_id = ?", (str(camera_id),))
+                row = cursor.fetchone()
+                
+                if row:
+                    # Update source, name, width, height, fps without affecting ROI settings
+                    cursor.execute("""
+                    UPDATE camera_config 
+                    SET source = ?, name = ?, width = ?, height = ?, fps = ?
+                    WHERE camera_id = ?;
+                    """, (source, name, width, height, fps, str(camera_id)))
+                else:
+                    # Insert new camera with default enabled=1
+                    cursor.execute("""
+                    INSERT INTO camera_config 
+                    (camera_id, source, name, width, height, fps, enabled) 
+                    VALUES (?, ?, ?, ?, ?, ?, 1);
+                    """, (str(camera_id), source, name, width, height, fps))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Added camera {camera_id} ({name or 'unnamed'}) with source {source} to database")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error adding camera to database: {e}")
+                return False
+    
+    def remove_camera(self, camera_id):
+        """
+        Remove a camera configuration from the database
+        
+        Args:
+            camera_id: ID of the camera to remove
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Check if the cameras table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cameras'")
+                if not cursor.fetchone():
+                    # Table doesn't exist, nothing to delete
+                    conn.close()
+                    return True
+                
+                # Delete camera record
+                cursor.execute("DELETE FROM cameras WHERE camera_id=?", (camera_id,))
+                
+                # Also delete ROI settings for this camera
+                self.clear_roi(camera_id)
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Removed camera {camera_id} from database")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error removing camera from database: {e}")
+                return False
+    
+    def get_cameras(self):
+        """
+        Get all camera configurations from the database
+        
+        Returns:
+            list: List of camera configurations as dictionaries, or empty list if error
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+                cursor = conn.cursor()
+                
+                # Check if the cameras table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cameras'")
+                if not cursor.fetchone():
+                    # Table doesn't exist, no cameras
+                    conn.close()
+                    return []
+                
+                # Get all cameras
+                cursor.execute("SELECT * FROM cameras")
+                cameras = [dict(row) for row in cursor.fetchall()]
+                
+                # Get ROI settings for each camera
+                for camera in cameras:
+                    roi = self.get_camera_roi(camera['camera_id'])
+                    if roi:
+                        camera['roi'] = roi
+                
+                conn.close()
+                return cameras
+                
+            except Exception as e:
+                self.logger.error(f"Error getting cameras from database: {e}")
+                return []
+    
+    def list_cameras(self):
+        """
+        List all camera configurations from the database
+        
+        Returns:
+            list: List of camera configurations as dictionaries
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+                cursor = conn.cursor()
+                
+                # Get cameras with ROI settings in a single query using LEFT JOIN
+                cursor.execute("""
+                    SELECT c.*, 
+                           r.roi_x1, r.roi_y1, r.roi_x2, r.roi_y2, r.entry_direction
+                    FROM cameras c 
+                    LEFT JOIN camera_config r ON c.camera_id = r.camera_id
+                """)
+                
+                rows = cursor.fetchall()
+                cameras = []
+                
+                for row in rows:
+                    camera = dict(row)
+                    cameras.append(camera)
+                
+                conn.close()
+                return cameras
+                
+            except Exception as e:
+                self.logger.error(f"Error listing cameras: {e}")
+                return []
+    
+    def update_camera(self, camera_id, enabled=None, name=None, width=None, height=None, fps=None):
+        """
+        Update a camera configuration in the database
+        
+        Args:
+            camera_id: ID of the camera to update
+            enabled: Whether the camera is enabled (1 or 0)
+            name: Camera name
+            width: Camera width
+            height: Camera height
+            fps: Camera FPS
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Check if the cameras table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cameras'")
+                if not cursor.fetchone():
+                    # Table doesn't exist, can't update
+                    conn.close()
+                    return False
+                
+                # Check if camera exists
+                cursor.execute("SELECT camera_id FROM cameras WHERE camera_id=?", (camera_id,))
+                if not cursor.fetchone():
+                    # Camera doesn't exist, can't update
+                    conn.close()
+                    return False
+                
+                # Build update query with only the fields that are provided
+                query = "UPDATE cameras SET updated_at=CURRENT_TIMESTAMP"
+                params = []
+                
+                if enabled is not None:
+                    query += ", enabled=?"
+                    params.append(1 if enabled else 0)
+                
+                if name is not None:
+                    query += ", name=?"
+                    params.append(name)
+                
+                if width is not None:
+                    query += ", width=?"
+                    params.append(width)
+                
+                if height is not None:
+                    query += ", height=?"
+                    params.append(height)
+                
+                if fps is not None:
+                    query += ", fps=?"
+                    params.append(fps)
+                
+                query += " WHERE camera_id=?"
+                params.append(camera_id)
+                
+                # Execute update if any fields to update
+                if len(params) > 1:  # More than just camera_id
+                    cursor.execute(query, params)
+                    conn.commit()
+                
+                conn.close()
+                
+                self.logger.info(f"Updated camera {camera_id} in database")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error updating camera in database: {e}")
                 return False 

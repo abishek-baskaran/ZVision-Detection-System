@@ -70,9 +70,12 @@ class DashboardManager:
             self.monitor_thread.daemon = True
             self.monitor_thread.start()
     
-    def record_detection(self):
+    def record_detection(self, camera_id=None):
         """
         Record a new person detection
+        
+        Args:
+            camera_id: Optional camera ID that detected the person
         """
         with self.metrics_lock:
             self.detection_count += 1
@@ -82,14 +85,36 @@ class DashboardManager:
             hour_key = datetime.now().strftime("%Y-%m-%d %H:00")
             self.hourly_stats[hour_key]["detection_count"] += 1
             
-            self.logger.info(f"Total detections incremented: {self.detection_count}")
+            # Track per-camera metrics if camera_id is provided
+            if camera_id:
+                # Initialize per-camera metrics if not already present
+                if not hasattr(self, 'camera_metrics'):
+                    self.camera_metrics = {}
+                
+                if camera_id not in self.camera_metrics:
+                    self.camera_metrics[camera_id] = {
+                        "detection_count": 0,
+                        "left_to_right": 0,
+                        "right_to_left": 0,
+                        "unknown": 0,
+                        "entry": 0,
+                        "exit": 0,
+                        "last_detection_time": None
+                    }
+                
+                # Update per-camera metrics
+                self.camera_metrics[camera_id]["detection_count"] += 1
+                self.camera_metrics[camera_id]["last_detection_time"] = time.time()
+            
+            self.logger.info(f"Total detections incremented: {self.detection_count}, camera: {camera_id}")
     
-    def record_direction(self, direction):
+    def record_direction(self, direction, camera_id=None):
         """
         Record a direction of movement
         
         Args:
             direction (str): Direction of movement ('left_to_right', 'right_to_left', 'unknown')
+            camera_id: Optional camera ID that detected the direction
         """
         with self.metrics_lock:
             if direction in self.direction_counts:
@@ -107,17 +132,39 @@ class DashboardManager:
             self.detection_history.append({
                 "timestamp": time.time(),
                 "direction": direction,
-                "duration": 0  # Placeholder, would be updated when person leaves
+                "duration": 0,  # Placeholder, would be updated when person leaves
+                "camera_id": camera_id
             })
             
-            self.logger.info(f"Recorded direction: {direction}")
+            # Track per-camera metrics if camera_id is provided
+            if camera_id:
+                # Initialize per-camera metrics if not already present
+                if not hasattr(self, 'camera_metrics'):
+                    self.camera_metrics = {}
+                
+                if camera_id not in self.camera_metrics:
+                    self.camera_metrics[camera_id] = {
+                        "detection_count": 0,
+                        "left_to_right": 0,
+                        "right_to_left": 0,
+                        "unknown": 0,
+                        "entry": 0,
+                        "exit": 0,
+                        "last_detection_time": None
+                    }
+                
+                # Update per-camera metrics
+                self.camera_metrics[camera_id][direction] += 1
+            
+            self.logger.info(f"Recorded direction: {direction}, camera: {camera_id}")
     
-    def record_footfall(self, event_type):
+    def record_footfall(self, event_type, camera_id=None):
         """
         Record a footfall event (entry or exit)
         
         Args:
             event_type (str): Type of footfall event ('entry', 'exit', or other)
+            camera_id: Optional camera ID that detected the footfall
         """
         with self.metrics_lock:
             # Normalize the event type to handle different formats
@@ -141,7 +188,27 @@ class DashboardManager:
             # Keep track of the last footfall type
             self.last_footfall_type = event_key
             
-            self.logger.info(f"Recorded footfall: {event_key}, total: {self.footfall_counts[event_key]}")
+            # Track per-camera metrics if camera_id is provided
+            if camera_id:
+                # Initialize per-camera metrics if not already present
+                if not hasattr(self, 'camera_metrics'):
+                    self.camera_metrics = {}
+                
+                if camera_id not in self.camera_metrics:
+                    self.camera_metrics[camera_id] = {
+                        "detection_count": 0,
+                        "left_to_right": 0,
+                        "right_to_left": 0,
+                        "unknown": 0,
+                        "entry": 0,
+                        "exit": 0,
+                        "last_detection_time": None
+                    }
+                
+                # Update per-camera metrics
+                self.camera_metrics[camera_id][event_key] += 1
+            
+            self.logger.info(f"Recorded footfall: {event_key}, total: {self.footfall_counts[event_key]}, camera: {camera_id}")
     
     def _monitor_detections(self):
         """
@@ -237,12 +304,13 @@ class DashboardManager:
                 "direction_counts": self.direction_counts.copy()
             }
     
-    def get_hourly_metrics(self, hours=24):
+    def get_hourly_metrics(self, hours=24, camera_id=None):
         """
         Get hourly detection metrics for the specified number of hours
         
         Args:
             hours: Number of hours to include (default: 24)
+            camera_id: Optional camera ID to filter metrics for
             
         Returns:
             dict: Hourly detection statistics
@@ -254,14 +322,89 @@ class DashboardManager:
         start_hour = start_time.strftime("%Y-%m-%d %H:00")
         
         with self.metrics_lock:
-            # Filter hourly stats to include only the specified hours
-            filtered_stats = {
-                hour: stats.copy() 
-                for hour, stats in self.hourly_stats.items() 
-                if hour >= start_hour
-            }
+            # If requesting camera-specific metrics and we have them
+            if camera_id and hasattr(self, 'camera_metrics') and camera_id in self.camera_metrics:
+                # For camera-specific data, we need to reconstruct hourly data
+                # This is simplified as we don't store historical hourly data per camera
+                # So we'll just return the current camera metrics with timestamps
+                camera_data = self.camera_metrics[camera_id]
+                hourly_data = {}
+                
+                # Create a single entry with current timestamp
+                current_hour = now.strftime("%Y-%m-%d %H:00")
+                hourly_data[current_hour] = camera_data.copy()
+                
+                return hourly_data
+            else:
+                # Filter hourly stats to include only the specified hours
+                filtered_stats = {
+                    hour: stats.copy() 
+                    for hour, stats in self.hourly_stats.items() 
+                    if hour >= start_hour
+                }
+                
+                return filtered_stats
+    
+    def get_daily_metrics(self, days=7, camera_id=None):
+        """
+        Get detection metrics grouped by day for the specified period
+        
+        Args:
+            days: Number of days to include (default: 7)
+            camera_id: Optional camera ID to filter metrics for
             
-            return filtered_stats
+        Returns:
+            dict: Daily detection metrics
+        """
+        daily_metrics = {}
+        now = datetime.now()
+        
+        with self.metrics_lock:
+            # If requesting camera-specific metrics and we have them
+            if camera_id and hasattr(self, 'camera_metrics') and camera_id in self.camera_metrics:
+                # For camera-specific data, we'll just use current data for today
+                camera_data = self.camera_metrics[camera_id]
+                
+                # Create a single entry with current date
+                today = now.strftime("%Y-%m-%d")
+                daily_metrics[today] = camera_data.copy()
+                
+                return daily_metrics
+            else:
+                # Process hourly stats to create daily aggregates
+                for hour_key, stats in self.hourly_stats.items():
+                    try:
+                        # Parse hour_key (format: "YYYY-MM-DD HH:00")
+                        hour_date = datetime.strptime(hour_key, "%Y-%m-%d %H:00")
+                        
+                        # Check if within the specified days
+                        if (now - hour_date).days <= days:
+                            # Extract just the date part
+                            date_key = hour_date.strftime("%Y-%m-%d")
+                            
+                            # Initialize date entry if not exists
+                            if date_key not in daily_metrics:
+                                daily_metrics[date_key] = {
+                                    "detection_count": 0,
+                                    "left_to_right": 0,
+                                    "right_to_left": 0,
+                                    "unknown": 0,
+                                    "entry": 0,
+                                    "exit": 0
+                                }
+                            
+                            # Add hourly stats to daily totals
+                            daily_metrics[date_key]["detection_count"] += stats["detection_count"]
+                            daily_metrics[date_key]["left_to_right"] += stats["left_to_right"]
+                            daily_metrics[date_key]["right_to_left"] += stats["right_to_left"]
+                            daily_metrics[date_key]["unknown"] += stats["unknown"]
+                            daily_metrics[date_key]["entry"] += stats["entry"]
+                            daily_metrics[date_key]["exit"] += stats["exit"]
+                    except Exception as e:
+                        self.logger.error(f"Error processing hourly stats for {hour_key}: {e}")
+                        continue
+            
+            return daily_metrics
     
     def get_recent_detections(self, count=10):
         """
@@ -379,4 +522,25 @@ class DashboardManager:
                     self.logger.error(f"Error processing hourly stats for {hour_key}: {e}")
                     continue
         
-        return daily_metrics 
+        return daily_metrics
+    
+    def get_camera_metrics(self, camera_id=None):
+        """
+        Get metrics for a specific camera
+        
+        Args:
+            camera_id: Camera ID to get metrics for (None for all cameras)
+            
+        Returns:
+            dict: Metrics for the specified camera or all cameras
+        """
+        with self.metrics_lock:
+            if not hasattr(self, 'camera_metrics'):
+                return {}
+            
+            if camera_id:
+                if camera_id in self.camera_metrics:
+                    return self.camera_metrics[camera_id]
+                return {}
+            else:
+                return self.camera_metrics 

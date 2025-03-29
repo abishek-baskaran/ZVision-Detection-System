@@ -234,20 +234,52 @@
         </div>
         
         <div class="card">
-            <h3>Live Camera Feed</h3>
-            <div style="position: relative; display: inline-block; margin: 0 auto;">
-                <img id="camera-feed" src="/video_feed" alt="Live camera feed">
-                <canvas id="roi-canvas" width="640" height="480"></canvas>
+            <h3>Live Camera Feeds</h3>
+            <div style="display: flex; justify-content: center; flex-wrap: wrap;">
+                <!-- Main Camera Feed -->
+                <div style="position: relative; margin: 10px;">
+                    <img id="camera-feed-main" src="/video_feed/main" width="320" height="240" alt="Main Camera Feed">
+                    <p style="text-align:center; font-weight: bold;">Main Camera</p>
+                    <canvas id="roi-canvas-main" width="320" height="240" style="position:absolute; top:0; left:0; cursor: crosshair;"></canvas>
+                </div>
+
+                <!-- Secondary Camera Feed -->
+                <div style="position: relative; margin: 10px;">
+                    <img id="camera-feed-secondary" src="/video_feed/secondary" width="320" height="240" alt="Secondary Camera Feed">
+                    <p style="text-align:center; font-weight: bold;">Secondary Camera</p>
+                    <canvas id="roi-canvas-secondary" width="320" height="240" style="position:absolute; top:0; left:0; cursor: crosshair;"></canvas>
+                </div>
             </div>
-            <p>Draw a box over the doorway area in the video feed. Select which direction counts as entry, then click "Save".</p>
-            <div id="roi-controls">
-                <label><input type="radio" name="entryDir" value="LTR" checked> Left-to-Right = Entry</label><br>
-                <label><input type="radio" name="entryDir" value="RTL"> Right-to-Left = Entry</label>
+            <p>Draw a box over the doorway area in either camera feed. Select which direction counts as entry, then click "Save" for the respective camera.</p>
+            
+            <!-- Main Camera ROI Controls -->
+            <div class="roi-group">
+                <h4>Main Camera ROI Configuration</h4>
+                <div id="roi-controls-main" class="roi-controls">
+                    <label><input type="radio" name="entryDirMain" value="LTR" checked> Left-to-Right = Entry</label><br>
+                    <label><input type="radio" name="entryDirMain" value="RTL"> Right-to-Left = Entry</label>
+                    <div class="buttons">
+                        <button id="save-roi-main">Save ROI</button>
+                        <button id="reset-roi-main">Reset ROI</button>
+                    </div>
+                </div>
             </div>
+            
+            <!-- Secondary Camera ROI Controls -->
+            <div class="roi-group">
+                <h4>Secondary Camera ROI Configuration</h4>
+                <div id="roi-controls-secondary" class="roi-controls">
+                    <label><input type="radio" name="entryDirSecondary" value="LTR" checked> Left-to-Right = Entry</label><br>
+                    <label><input type="radio" name="entryDirSecondary" value="RTL"> Right-to-Left = Entry</label>
+                    <div class="buttons">
+                        <button id="save-roi-secondary">Save ROI</button>
+                        <button id="reset-roi-secondary">Reset ROI</button>
+                    </div>
+                </div>
+            </div>
+            
             <div class="buttons">
                 <button id="toggle-detect">Pause Detection</button>
-                <button id="save-roi">Save ROI Configuration</button>
-                <button id="reset-roi">Reset ROI</button>
             </div>
         </div>
         
@@ -278,27 +310,169 @@
             let socketConnected = false;
             let socket;
             
-            // ROI Canvas Setup
-            const canvas = document.getElementById('roi-canvas');
-            const ctx = canvas.getContext('2d');
-            let drawing = false;
-            let startX, startY;
+            // ROI Canvas Setup for both cameras
+            let roiCanvases = {};
+            let drawingState = {};
+            let selectedROIs = {};
             
-            // Initialize canvas size to match the video feed
-            function resizeCanvas() {
-                const videoFeed = document.getElementById('camera-feed');
-                canvas.width = videoFeed.clientWidth;
-                canvas.height = videoFeed.clientHeight;
+            // Initialize ROI canvas for a specific camera
+            function initROICanvas(cameraId) {
+                const canvas = document.getElementById(`roi-canvas-${cameraId}`);
+                const ctx = canvas.getContext('2d');
+                const videoFeed = document.getElementById(`camera-feed-${cameraId}`);
                 
-                // If we have a selected ROI, redraw it
-                if (window.selectedROI) {
-                    drawROI(window.selectedROI);
+                roiCanvases[cameraId] = {
+                    canvas: canvas,
+                    ctx: ctx,
+                    videoFeed: videoFeed
+                };
+                
+                // Initialize drawing state
+                drawingState[cameraId] = {
+                    drawing: false,
+                    startX: 0,
+                    startY: 0
+                };
+                
+                // Resize canvas to match video feed
+                function resizeCanvas() {
+                    canvas.width = videoFeed.clientWidth;
+                    canvas.height = videoFeed.clientHeight;
+                    
+                    // Redraw ROI if it exists
+                    if (selectedROIs[cameraId]) {
+                        drawROI(cameraId, selectedROIs[cameraId]);
+                    }
                 }
+                
+                // Initialize canvas size
+                resizeCanvas();
+                
+                // Resize on window change
+                window.addEventListener('resize', () => resizeCanvas());
+                
+                // Wait for the video to load and then resize the canvas
+                videoFeed.onload = function() {
+                    setTimeout(() => resizeCanvas(), 100); // Short delay to ensure image has rendered
+                };
+                
+                // Drawing event handlers
+                canvas.onmousedown = (e) => {
+                    drawingState[cameraId].drawing = true;
+                    const rect = canvas.getBoundingClientRect();
+                    drawingState[cameraId].startX = e.clientX - rect.left;
+                    drawingState[cameraId].startY = e.clientY - rect.top;
+                };
+                
+                canvas.onmousemove = (e) => {
+                    if (!drawingState[cameraId].drawing) return;
+                    const rect = canvas.getBoundingClientRect();
+                    const currX = e.clientX - rect.left;
+                    const currY = e.clientY - rect.top;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.strokeStyle = 'red';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(
+                        drawingState[cameraId].startX, 
+                        drawingState[cameraId].startY, 
+                        currX - drawingState[cameraId].startX, 
+                        currY - drawingState[cameraId].startY
+                    );
+                };
+                
+                canvas.onmouseup = (e) => {
+                    drawingState[cameraId].drawing = false;
+                    const rect = canvas.getBoundingClientRect();
+                    const endX = e.clientX - rect.left;
+                    const endY = e.clientY - rect.top;
+                    const x1 = Math.min(drawingState[cameraId].startX, endX);
+                    const y1 = Math.min(drawingState[cameraId].startY, endY);
+                    const x2 = Math.max(drawingState[cameraId].startX, endX);
+                    const y2 = Math.max(drawingState[cameraId].startY, endY);
+                    
+                    // Check if the box is too small (at least 10x10 pixels)
+                    if (x2 - x1 < 10 || y2 - y1 < 10) {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        showNotification(`ROI for Camera ${cameraId} is too small. Please draw a larger box.`, "error");
+                        return;
+                    }
+                    
+                    // Store the ROI coordinates
+                    selectedROIs[cameraId] = { x1, y1, x2, y2 };
+                    
+                    // Draw the ROI
+                    drawROI(cameraId, selectedROIs[cameraId]);
+                    console.log(`New ROI drawn for Camera ${cameraId}:`, selectedROIs[cameraId]);
+                };
+                
+                // Setup Save ROI button
+                document.getElementById(`save-roi-${cameraId}`).onclick = () => {
+                    if (!selectedROIs[cameraId]) {
+                        showNotification(`No ROI selected for Camera ${cameraId}. Please draw a box first.`, "error");
+                        return;
+                    }
+                    
+                    // Use the correct input name based on camera ID
+                    let entrySelectorName;
+                    if (cameraId === 'main') {
+                        entrySelectorName = 'entryDirMain';
+                    } else if (cameraId === 'secondary') {
+                        entrySelectorName = 'entryDirSecondary';
+                    } else {
+                        entrySelectorName = `entryDir${cameraId}`;
+                    }
+                    
+                    const entryDir = document.querySelector(`input[name="${entrySelectorName}"]:checked`).value;
+                    const roiData = {
+                        x1: selectedROIs[cameraId].x1,
+                        y1: selectedROIs[cameraId].y1,
+                        x2: selectedROIs[cameraId].x2,
+                        y2: selectedROIs[cameraId].y2,
+                        entry_direction: entryDir
+                    };
+                    
+                    fetch(`/api/cameras/${cameraId}/roi`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(roiData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showNotification(`ROI configuration for Camera ${cameraId} saved successfully.`, "success");
+                        } else {
+                            showNotification(`Failed to save ROI for Camera ${cameraId}: ${data.error || "Unknown error"}`, "error");
+                        }
+                    })
+                    .catch(error => {
+                        showNotification(`Error saving ROI for Camera ${cameraId}: ${error}`, "error");
+                    });
+                };
+                
+                // Setup Reset ROI button
+                document.getElementById(`reset-roi-${cameraId}`).onclick = () => {
+                    fetch(`/api/cameras/${cameraId}/roi/clear`, { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showNotification(`ROI configuration for Camera ${cameraId} reset. Detection will use the full frame.`, "success");
+                            selectedROIs[cameraId] = null;
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        } else {
+                            showNotification(`Failed to reset ROI for Camera ${cameraId}: ${data.error || "Unknown error"}`, "error");
+                        }
+                    })
+                    .catch(error => {
+                        showNotification(`Error resetting ROI for Camera ${cameraId}: ${error}`, "error");
+                    });
+                };
             }
             
             // Helper function to draw ROI on the canvas
-            function drawROI(roi) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            function drawROI(cameraId, roi) {
+                const ctx = roiCanvases[cameraId].ctx;
+                ctx.clearRect(0, 0, roiCanvases[cameraId].canvas.width, roiCanvases[cameraId].canvas.height);
+                
                 if (roi) {
                     ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
                     ctx.fillRect(roi.x1, roi.y1, roi.x2 - roi.x1, roi.y2 - roi.y1);
@@ -308,123 +482,17 @@
                 }
             }
             
-            // Initial resize and resize on window change
-            resizeCanvas();
-            window.addEventListener('resize', resizeCanvas);
-            
-            // Wait for the video to load and then resize the canvas
-            document.getElementById('camera-feed').onload = function() {
-                setTimeout(resizeCanvas, 100); // Short delay to ensure image has rendered
-            };
-
-            // Drawing functions for ROI
-            canvas.onmousedown = (e) => {
-                drawing = true;
-                const rect = canvas.getBoundingClientRect();
-                startX = e.clientX - rect.left;
-                startY = e.clientY - rect.top;
-            };
-
-            canvas.onmousemove = (e) => {
-                if (!drawing) return;
-                const rect = canvas.getBoundingClientRect();
-                const currX = e.clientX - rect.left;
-                const currY = e.clientY - rect.top;
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.strokeStyle = 'red';
-                ctx.lineWidth = 2;
-                ctx.strokeRect(startX, startY, currX - startX, currY - startY);
-            };
-
-            canvas.onmouseup = (e) => {
-                drawing = false;
-                const rect = canvas.getBoundingClientRect();
-                const endX = e.clientX - rect.left;
-                const endY = e.clientY - rect.top;
-                const x1 = Math.min(startX, endX);
-                const y1 = Math.min(startY, endY);
-                const x2 = Math.max(startX, endX);
-                const y2 = Math.max(startY, endY);
-                
-                // Check if the box is too small (at least 10x10 pixels)
-                if (x2 - x1 < 10 || y2 - y1 < 10) {
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    showNotification("ROI is too small. Please draw a larger box.", "error");
-                    return;
-                }
-                
-                // Store the ROI coordinates
-                window.selectedROI = { x1, y1, x2, y2 };
-                
-                // Draw the ROI
-                drawROI(window.selectedROI);
-                console.log("New ROI drawn:", window.selectedROI);
-            };
-            
-            // Save ROI Configuration
-            document.getElementById('save-roi').onclick = () => {
-                if (!window.selectedROI) {
-                    showNotification("No ROI selected. Please draw a box first.", "error");
-                    return;
-                }
-                const entryDir = document.querySelector('input[name="entryDir"]:checked').value;
-                const roiData = {
-                    x1: window.selectedROI.x1,
-                    y1: window.selectedROI.y1,
-                    x2: window.selectedROI.x2,
-                    y2: window.selectedROI.y2,
-                    entry_direction: entryDir
-                };
-                fetch('/api/cameras/0/roi', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(roiData)
-                })
+            // Load ROI configuration for a specific camera
+            function loadROIForCamera(cameraId) {
+                fetch(`/api/cameras/${cameraId}`)
                 .then(response => response.json())
                 .then(data => {
-                    if (data.success) {
-                        showNotification("ROI configuration saved successfully.", "success");
-                    } else {
-                        showNotification("Failed to save ROI: " + (data.error || "Unknown error"), "error");
-                    }
-                })
-                .catch(error => {
-                    showNotification("Error saving ROI: " + error, "error");
-                });
-            };
-            
-            // Reset ROI Configuration
-            document.getElementById('reset-roi').onclick = () => {
-                fetch('/api/cameras/0/roi/clear', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        showNotification("ROI configuration reset. Detection will use the full frame.", "success");
-                        window.selectedROI = null;
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    } else {
-                        showNotification("Failed to reset ROI: " + (data.error || "Unknown error"), "error");
-                    }
-                })
-                .catch(error => {
-                    showNotification("Error resetting ROI: " + error, "error");
-                });
-            };
-            
-            // Apply ROI configuration on load
-            function loadCurrentROI() {
-                fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    // Check if there's ROI data in the status
-                    if (data.roi && data.roi.coords) {
-                        const r = data.roi.coords;
-                        
-                        // Make sure canvas is properly sized
-                        resizeCanvas();
+                    // Check if there's ROI data in the response
+                    if (data.roi) {
+                        const r = data.roi;
                         
                         // Store the ROI coordinates
-                        window.selectedROI = {
+                        selectedROIs[cameraId] = {
                             x1: r.x1, 
                             y1: r.y1, 
                             x2: r.x2, 
@@ -432,39 +500,36 @@
                         };
                         
                         // Draw the ROI on the canvas
-                        drawROI(window.selectedROI);
-                        console.log("Loaded ROI:", window.selectedROI);
+                        drawROI(cameraId, selectedROIs[cameraId]);
+                        console.log(`Loaded ROI for Camera ${cameraId}:`, selectedROIs[cameraId]);
                         
-                        // Set the entry direction radio button
-                        const entryDir = data.roi.entry_direction || "LTR";
-                        const radioBtn = document.querySelector(`input[name="entryDir"][value="${entryDir}"]`);
-                        if (radioBtn) radioBtn.checked = true;
+                        // Set the entry direction radio button - use a different selector for each camera ID
+                        const entryDir = data.entry_direction || "LTR";
+                        let radioSelector;
+                        
+                        // Create the appropriate selector based on the camera ID
+                        if (cameraId === 'main') {
+                            radioSelector = `input[name="entryDirMain"][value="${entryDir}"]`;
+                        } else if (cameraId === 'secondary') {
+                            radioSelector = `input[name="entryDirSecondary"][value="${entryDir}"]`;
+                        } else {
+                            // Fallback selector format for other camera IDs
+                            radioSelector = `input[name="entryDir${cameraId}"][value="${entryDir}"]`;
+                        }
+                        
+                        const radioBtn = document.querySelector(radioSelector);
+                        if (radioBtn) {
+                            radioBtn.checked = true;
+                        } else {
+                            console.warn(`Could not find radio button for ${cameraId} with direction ${entryDir}`);
+                        }
                     } else {
-                        console.log("No ROI configuration found in status data");
+                        console.log(`No ROI configuration found for Camera ${cameraId}`);
                     }
                 })
                 .catch(error => {
-                    console.error("Error loading ROI configuration:", error);
+                    console.error(`Error loading ROI configuration for Camera ${cameraId}:`, error);
                 });
-            }
-            
-            // Additional notification function for ROI operations
-            function showNotification(message, type) {
-                const notification = document.getElementById('notification');
-                notification.textContent = message;
-                notification.className = 'notification show';
-                
-                if (type === 'success') {
-                    notification.style.backgroundColor = '#4CAF50';
-                } else if (type === 'error') {
-                    notification.style.backgroundColor = '#f44336';
-                } else {
-                    notification.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
-                }
-                
-                setTimeout(() => {
-                    notification.classList.remove('show');
-                }, 3000);
             }
             
             // Update system status
@@ -792,14 +857,103 @@
                 });
             }
             
+            // Update page with camera comparison metrics
+            function updateCameraComparison() {
+                fetch('/api/analytics/compare')
+                    .then(response => response.json())
+                    .then(data => {
+                        let comparisonHTML = '<h3>Camera Comparison</h3>';
+                        
+                        if (data.cameras) {
+                            // Create a comparison table
+                            comparisonHTML += '<table class="recent-table">';
+                            comparisonHTML += '<tr><th>Camera</th><th>Detections</th><th>Entries</th><th>Exits</th></tr>';
+                            
+                            // Add row for each camera
+                            Object.entries(data.cameras).forEach(([camId, metrics]) => {
+                                if (camId !== 'total') {
+                                    comparisonHTML += `<tr>
+                                        <td>Camera ${camId}</td>
+                                        <td>${metrics.detection_count || 0}</td>
+                                        <td>${metrics.entry_count || 0}</td>
+                                        <td>${metrics.exit_count || 0}</td>
+                                    </tr>`;
+                                }
+                            });
+                            
+                            // Add total row
+                            if (data.cameras.total) {
+                                const total = data.cameras.total;
+                                comparisonHTML += `<tr style="font-weight: bold; background-color: #f5f5f5;">
+                                    <td>Total</td>
+                                    <td>${total.detection_count || 0}</td>
+                                    <td>${total.entry_count || 0}</td>
+                                    <td>${total.exit_count || 0}</td>
+                                </tr>`;
+                            }
+                            
+                            comparisonHTML += '</table>';
+                        } else {
+                            comparisonHTML += '<p>No comparison data available</p>';
+                        }
+                        
+                        // Add the comparison section if it doesn't exist yet
+                        let comparisonSection = document.getElementById('comparison-metrics');
+                        if (!comparisonSection) {
+                            // Create the comparison section
+                            const metricsCard = document.createElement('div');
+                            metricsCard.className = 'card';
+                            metricsCard.innerHTML = `<div id="comparison-metrics">${comparisonHTML}</div>`;
+                            
+                            // Find where to insert it (after metrics card)
+                            const metricsContainer = document.querySelector('.metrics');
+                            if (metricsContainer && metricsContainer.parentNode) {
+                                metricsContainer.parentNode.insertBefore(metricsCard, metricsContainer.nextSibling);
+                            } else {
+                                // Fallback - add to the container
+                                document.querySelector('.container').appendChild(metricsCard);
+                            }
+                        } else {
+                            comparisonSection.innerHTML = comparisonHTML;
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Error fetching camera comparison:', err);
+                    });
+            }
+            
+            // Additional notification function for ROI operations
+            function showNotification(message, type) {
+                const notification = document.getElementById('notification');
+                notification.textContent = message;
+                notification.className = 'notification show';
+                
+                if (type === 'success') {
+                    notification.style.backgroundColor = '#4CAF50';
+                } else if (type === 'error') {
+                    notification.style.backgroundColor = '#f44336';
+                } else {
+                    notification.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+                }
+                
+                setTimeout(() => {
+                    notification.classList.remove('show');
+                }, 3000);
+            }
+            
             // Update everything on page load
             document.addEventListener('DOMContentLoaded', function() {
                 console.log("Page loaded, initializing...");
+                
+                // Initialize ROI canvases for both cameras
+                initROICanvas('main');
+                initROICanvas('secondary');
                 
                 // Initial updates
                 updateStatus();
                 updateMetrics();
                 updateRecentDetections();
+                updateCameraComparison();
                 
                 // Set up detection toggle button
                 document.getElementById('toggle-detect').addEventListener('click', toggleDetection);
@@ -820,8 +974,9 @@
                     }
                 });
                 
-                // Load any existing ROI configuration
-                loadCurrentROI();
+                // Load any existing ROI configuration for both cameras
+                loadROIForCamera('main');
+                loadROIForCamera('secondary');
                 
                 // Initialize real-time connection after initial updates
                 setTimeout(() => initSocketIO(), 1000);
@@ -830,6 +985,7 @@
                 setInterval(updateStatus, 15000);       // Update status every 15 seconds
                 setInterval(updateMetrics, 30000);      // Update metrics every 30 seconds
                 setInterval(updateRecentDetections, 15000); // Update recent detections every 15 seconds
+                setInterval(updateCameraComparison, 30000); // Update camera comparison every 30 seconds
             });
         </script>
     </div>

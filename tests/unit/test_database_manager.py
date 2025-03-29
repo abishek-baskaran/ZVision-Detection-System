@@ -9,7 +9,7 @@ def main():
     rp = ResourceProvider("config.yaml")
     
     # Get a logger for this test
-    logger = rp.get_logger("TestDatabaseManager")
+    logger = rp.get_logger()
     logger.info("Starting DatabaseManager test")
     
     # Initialize DatabaseManager

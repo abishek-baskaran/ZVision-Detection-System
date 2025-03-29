@@ -13,12 +13,15 @@ from flask import Flask, request, jsonify, render_template, send_from_directory,
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
+# Import our new analytics engine
+from . import analytics_engine
+
 class APIManager:
     """
     Manages the REST API for the system
     """
     
-    def __init__(self, resource_provider, camera_manager, detection_manager, dashboard_manager, db_manager):
+    def __init__(self, resource_provider, camera_manager, detection_manager, dashboard_manager, db_manager, camera_registry=None):
         """
         Initialize the API manager
         
@@ -28,6 +31,7 @@ class APIManager:
             detection_manager: The detection manager for accessing detection state
             dashboard_manager: The dashboard manager for accessing metrics
             db_manager: The database manager for accessing stored data
+            camera_registry: The camera registry for managing multiple cameras
         """
         self.logger = resource_provider.get_logger()
         self.config = resource_provider.get_config()
@@ -35,6 +39,7 @@ class APIManager:
         self.detection_manager = detection_manager
         self.dashboard_manager = dashboard_manager
         self.db_manager = db_manager
+        self.camera_registry = camera_registry
         
         # Extract API settings from config
         api_config = self.config.get('api', {})
@@ -42,17 +47,26 @@ class APIManager:
         self.port = api_config.get('port', 5000)
         self.debug = api_config.get('debug', False)
         
+        # Configure Flask logging to use standard output
+        import logging
+        logging.getLogger('werkzeug').setLevel(logging.INFO)
+        
         # Initialize Flask app
         self.app = Flask(__name__, static_folder="../static", static_url_path="/static")
         CORS(self.app)  # Enable Cross-Origin Resource Sharing
         
-        # Initialize SocketIO - simplify configuration to avoid issues
+        # Initialize SocketIO with minimal configuration to ensure proper behavior
         self.socketio = SocketIO(
             self.app, 
             cors_allowed_origins="*",
-            async_mode='threading'  # Use threading mode instead of eventlet
+            async_mode='threading',  # Use threading mode instead of eventlet
+            logger=True,             # Enable SocketIO's logger
+            engineio_logger=True     # Enable Engine.IO's logger
         )
         self.logger.info(f"Using SocketIO with threading mode")
+        
+        # Initialize analytics engine
+        analytics_engine.init(self.config)
         
         # Register API routes
         self._register_routes()
@@ -111,6 +125,308 @@ class APIManager:
             except Exception as e:
                 self.logger.error(f"Error in video feed: {e}")
                 return "Video feed error", 500
+
+        # Camera-specific video feed endpoint
+        @self.app.route('/video_feed/<camera_id>')
+        def camera_video_feed(camera_id):
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return "Camera registry not available", 500
+                
+            try:
+                cam = self.camera_registry.get_camera(camera_id)
+                if cam is None:
+                    self.logger.error(f"Camera not found: {camera_id}")
+                    return "Camera not found", 404
+                
+                # Generator function to yield frames from the specific camera
+                def gen_frames():
+                    while True:
+                        frame = cam.get_latest_frame()
+                        if frame is None:
+                            time.sleep(0.1)  # No frame available, wait a bit
+                            continue
+                        
+                        # Encode frame as JPEG
+                        success, buffer = cv2.imencode('.jpg', frame)
+                        if not success:
+                            continue
+                            
+                        # Convert to bytes and yield as an MJPEG frame
+                        frame_bytes = buffer.tobytes()
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                        
+                        # Sleep to control the frame rate (20 FPS max)
+                        time.sleep(0.05)
+                
+                self.logger.info(f"Starting MJPEG video stream for camera {camera_id}")
+                return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+            
+            except Exception as e:
+                self.logger.error(f"Error in video feed for camera {camera_id}: {e}")
+                return f"Video feed error: {str(e)}", 500
+        
+        # Camera Management Endpoints
+        
+        # List all cameras
+        @self.app.route('/api/cameras', methods=['GET'])
+        def list_cameras():
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                all_cameras = self.camera_registry.get_all_cameras()
+                camera_list = []
+                
+                for camera_id, camera in all_cameras.items():
+                    # Check if person is detected on this camera
+                    person_detected = False
+                    if self.detection_manager and camera_id in self.detection_manager.states:
+                        person_detected = self.detection_manager.states[camera_id].get("person_detected", False)
+                    
+                    camera_info = {
+                        "id": camera_id,
+                        "name": getattr(camera, "name", f"Camera {camera_id}"),
+                        "source": getattr(camera, "device_id", None),
+                        "status": "active" if camera.is_running else "inactive",
+                        "person_detected": person_detected
+                    }
+                    camera_list.append(camera_info)
+                
+                return jsonify(camera_list)
+            
+            except Exception as e:
+                self.logger.error(f"Error listing cameras: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Add a new camera
+        @self.app.route('/api/cameras', methods=['POST'])
+        def add_camera():
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                data = request.get_json()
+                
+                # Validate required fields
+                if not data or 'id' not in data or 'source' not in data:
+                    return jsonify({"error": "Missing required fields: id and source"}), 400
+                
+                # Extract parameters
+                cam_id = data["id"]
+                source = data["source"]
+                name = data.get("name", f"Camera {cam_id}")
+                width = data.get("width")
+                height = data.get("height")
+                fps = data.get("fps")
+                
+                # Add camera to registry
+                success = self.camera_registry.add_camera(cam_id, source, name=name, enabled=True)
+                
+                if not success:
+                    return jsonify({"error": "Failed to add camera"}), 500
+                
+                # Store camera configuration in database if a method exists
+                if hasattr(self.db_manager, 'add_camera'):
+                    self.db_manager.add_camera(cam_id, source, name, width, height, fps)
+                
+                return jsonify({"status": "Camera added", "id": cam_id}), 201
+            
+            except Exception as e:
+                self.logger.error(f"Error adding camera: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Get camera details
+        @self.app.route('/api/cameras/<camera_id>', methods=['GET'])
+        def get_camera_details(camera_id):
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                camera = self.camera_registry.get_camera(camera_id)
+                if camera is None:
+                    return jsonify({"error": f"Camera {camera_id} not found"}), 404
+                
+                # Get ROI settings if available
+                roi_settings = None
+                entry_direction = None
+                if self.detection_manager and camera_id in self.detection_manager.roi_settings:
+                    roi = self.detection_manager.roi_settings[camera_id]
+                    if "coords" in roi:
+                        roi_settings = {
+                            "x1": roi["coords"][0],
+                            "y1": roi["coords"][1],
+                            "x2": roi["coords"][2],
+                            "y2": roi["coords"][3]
+                        }
+                    if "entry_direction" in roi:
+                        entry_direction = roi["entry_direction"]
+                
+                # Check if person is detected on this camera
+                person_detected = False
+                if self.detection_manager and camera_id in self.detection_manager.states:
+                    person_detected = self.detection_manager.states[camera_id].get("person_detected", False)
+                
+                camera_info = {
+                    "id": camera_id,
+                    "name": getattr(camera, "name", f"Camera {camera_id}"),
+                    "source": getattr(camera, "device_id", None),
+                    "status": "active" if camera.is_running else "inactive",
+                    "person_detected": person_detected,
+                    "roi": roi_settings,
+                    "entry_direction": entry_direction,
+                    "resolution": {
+                        "width": getattr(camera, "width", 640),
+                        "height": getattr(camera, "height", 480)
+                    },
+                    "fps": getattr(camera, "fps", 30)
+                }
+                
+                return jsonify(camera_info)
+            
+            except Exception as e:
+                self.logger.error(f"Error getting camera details: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Update camera
+        @self.app.route('/api/cameras/<camera_id>', methods=['PUT'])
+        def update_camera(camera_id):
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                camera = self.camera_registry.get_camera(camera_id)
+                if camera is None:
+                    return jsonify({"error": f"Camera {camera_id} not found"}), 404
+                
+                data = request.get_json()
+                if not data:
+                    return jsonify({"error": "No update data provided"}), 400
+                
+                # Update camera name if provided
+                if 'name' in data:
+                    # Currently there's no direct way to update just the name,
+                    # so we need to recreate the camera with the new name
+                    source = getattr(camera, "device_id", None)
+                    if source is not None:
+                        enabled = camera.is_running
+                        # Stop the old camera first
+                        if enabled:
+                            camera.stop()
+                        # Add with the same ID but new name
+                        success = self.camera_registry.add_camera(camera_id, source, name=data['name'], enabled=enabled)
+                        if not success:
+                            return jsonify({"error": "Failed to update camera name"}), 500
+                
+                # Enable/disable detection if specified
+                if 'detection_enabled' in data:
+                    enabled = data['detection_enabled']
+                    if not self.detection_manager:
+                        return jsonify({"error": "Detection manager not available"}), 500
+                    
+                    if enabled:
+                        self.detection_manager.start_camera(camera_id)
+                    else:
+                        self.detection_manager.stop_camera(camera_id)
+                
+                return jsonify({"status": "Camera updated", "id": camera_id})
+            
+            except Exception as e:
+                self.logger.error(f"Error updating camera: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Remove camera
+        @self.app.route('/api/cameras/<camera_id>', methods=['DELETE'])
+        def remove_camera(camera_id):
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                # Check if camera exists
+                camera = self.camera_registry.get_camera(camera_id)
+                if camera is None:
+                    return jsonify({"error": f"Camera {camera_id} not found"}), 404
+                
+                # Stop detection for this camera if it's running
+                if self.detection_manager:
+                    self.detection_manager.stop_camera(camera_id)
+                
+                # Remove camera from registry
+                success = self.camera_registry.remove_camera(camera_id)
+                if not success:
+                    return jsonify({"error": "Failed to remove camera"}), 500
+                
+                # Remove camera configuration from database if method exists
+                if hasattr(self.db_manager, 'remove_camera'):
+                    self.db_manager.remove_camera(camera_id)
+                
+                # Remove ROI settings for this camera from database
+                if hasattr(self.db_manager, 'clear_roi'):
+                    self.db_manager.clear_roi(camera_id)
+                
+                return jsonify({"status": "Camera removed", "id": camera_id})
+            
+            except Exception as e:
+                self.logger.error(f"Error removing camera: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Camera status endpoint
+        @self.app.route('/api/cameras/<camera_id>/status', methods=['GET'])
+        def get_camera_status(camera_id):
+            if not self.camera_registry:
+                self.logger.error("Camera registry not available")
+                return jsonify({"error": "Camera registry not available"}), 500
+            
+            try:
+                camera = self.camera_registry.get_camera(camera_id)
+                if camera is None:
+                    return jsonify({"error": f"Camera {camera_id} not found"}), 404
+                
+                # Get detection state for this camera
+                detection_active = False
+                person_detected = False
+                last_detection_time = None
+                direction = "unknown"
+                
+                if self.detection_manager:
+                    # Check if detection is running for this camera
+                    detection_active = camera_id in self.detection_manager.detection_threads and \
+                                       self.detection_manager.detection_threads[camera_id].is_alive()
+                    
+                    # Get detection state if available
+                    if camera_id in self.detection_manager.states:
+                        state = self.detection_manager.states[camera_id]
+                        person_detected = state.get("person_detected", False)
+                        last_detection_time = state.get("last_detection_time")
+                        
+                        # Convert direction code to string
+                        dir_code = state.get("current_direction", self.detection_manager.DIRECTION_UNKNOWN)
+                        if dir_code == self.detection_manager.DIRECTION_LEFT_TO_RIGHT:
+                            direction = "left_to_right"
+                        elif dir_code == self.detection_manager.DIRECTION_RIGHT_TO_LEFT:
+                            direction = "right_to_left"
+                
+                status = {
+                    "id": camera_id,
+                    "streaming": camera.is_running,
+                    "detection_active": detection_active,
+                    "person_detected": person_detected,
+                    "last_detection_time": last_detection_time,
+                    "direction": direction,
+                    "frame_rate": getattr(camera, "current_fps", 0)
+                }
+                
+                return jsonify(status)
+            
+            except Exception as e:
+                self.logger.error(f"Error getting camera status: {e}")
+                return jsonify({"error": str(e)}), 500
         
         # Status endpoint - Get current system status
         @self.app.route('/api/status', methods=['GET'])
@@ -150,20 +466,10 @@ class APIManager:
                 # Get ROI configuration if available
                 roi_config = {}
                 try:
-                    roi_coords = self.detection_manager.get_roi()
-                    entry_direction = self.detection_manager.get_entry_direction()
-                    
-                    if roi_coords:
-                        x1, y1, x2, y2 = roi_coords
-                        roi_config = {
-                            "coords": {
-                                "x1": x1,
-                                "y1": y1,
-                                "x2": x2,
-                                "y2": y2
-                            },
-                            "entry_direction": entry_direction
-                        }
+                    # Since get_roi and get_entry_direction now require camera_id,
+                    # we'll just omit the ROI from the status endpoint
+                    # Clients should use /api/cameras/{camera_id} to get ROI details for each camera
+                    pass
                 except Exception as e:
                     self.logger.error(f"Error getting ROI configuration: {e}")
                 
@@ -172,8 +478,8 @@ class APIManager:
                     "system": system_status,
                     "detection": detection_status,
                     "detection_active": detection_active,
-                    "dashboard": dashboard_summary,
-                    "roi": roi_config
+                    "dashboard": dashboard_summary
+                    # ROI config is removed from status response - use camera-specific endpoints instead
                 }
                 
                 return jsonify(status)
@@ -344,34 +650,124 @@ class APIManager:
                 return jsonify({"error": str(e)}), 500
         
         # ROI Configuration Endpoints
-        @self.app.route('/api/cameras/<int:cam_id>/roi', methods=['POST'])
-        def set_roi(cam_id):
+        @self.app.route('/api/cameras/<camera_id>/roi', methods=['POST'])
+        def set_roi(camera_id):
             try:
                 data = request.get_json()
                 roi = (data['x1'], data['y1'], data['x2'], data['y2'])
                 entry_dir = data['entry_direction']
                 
                 # Set ROI in detection manager
-                self.detection_manager.set_roi(roi)
-                self.detection_manager.set_entry_direction(entry_dir)
+                self.detection_manager.set_roi(str(camera_id), roi)
+                self.detection_manager.set_entry_direction(str(camera_id), entry_dir)
                 
-                self.logger.info(f"ROI set to {roi} and entry direction to {entry_dir} via API")
+                self.logger.info(f"ROI set to {roi} and entry direction to {entry_dir} for camera {camera_id} via API")
                 return jsonify({"success": True, "message": "ROI configuration saved"})
             except Exception as e:
                 self.logger.error(f"Failed to save ROI: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
         
-        @self.app.route('/api/cameras/<int:cam_id>/roi/clear', methods=['POST'])
-        def clear_roi(cam_id):
+        @self.app.route('/api/cameras/<camera_id>/roi/clear', methods=['POST'])
+        def clear_roi(camera_id):
             try:
                 # Clear ROI in detection manager
-                self.detection_manager.clear_roi()
+                self.detection_manager.clear_roi(str(camera_id))
                 
-                self.logger.info("ROI configuration cleared via API")
+                self.logger.info(f"ROI configuration cleared for camera {camera_id} via API")
                 return jsonify({"success": True, "message": "ROI configuration cleared"})
             except Exception as e:
                 self.logger.error(f"Failed to clear ROI: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
+        
+        # Analytics endpoints for multi-camera support
+        
+        # Compare metrics across cameras
+        @self.app.route('/api/analytics/compare', methods=['GET'])
+        def compare_cameras():
+            if not self.dashboard_manager:
+                self.logger.error("Dashboard manager not available")
+                return jsonify({"error": "Dashboard manager not available"}), 500
+                
+            try:
+                # Get time period from query params
+                hours = request.args.get('hours', 24, type=int)
+                days = request.args.get('days', None, type=int)
+                
+                # Convert days to hours if specified
+                if days is not None:
+                    hours = days * 24
+                
+                # Use the analytics engine to get entry counts
+                metrics = analytics_engine.get_camera_entry_counts(
+                    last_hours=hours,
+                    camera_registry=self.camera_registry
+                )
+                
+                # Calculate aggregated total
+                total_count = sum(metrics.values())
+                
+                return jsonify({
+                    "time_period": f"Last {hours} hours",
+                    "camera_counts": metrics,
+                    "total": total_count
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error in compare cameras endpoint: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Time series data for one or more cameras
+        @self.app.route('/api/analytics/time-series', methods=['GET'])
+        def time_series_analytics():
+            if not self.dashboard_manager:
+                self.logger.error("Dashboard manager not available")
+                return jsonify({"error": "Dashboard manager not available"}), 500
+                
+            try:
+                # Get parameters from request
+                camera_id = request.args.get('camera', None)  # Optional specific camera
+                hours = request.args.get('hours', 24, type=int)
+                
+                # Use the analytics engine to get time series data
+                time_series_data = analytics_engine.get_time_series(
+                    camera_id=camera_id,
+                    hours=hours,
+                    camera_registry=self.camera_registry
+                )
+                
+                return jsonify({
+                    "time_period": f"Last {hours} hours",
+                    "data": time_series_data
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error in time series endpoint: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Heatmap data stub (not implemented yet)
+        @self.app.route('/api/analytics/heatmap', methods=['GET'])
+        def heatmap_analytics():
+            try:
+                camera_id = request.args.get('camera', 'main')
+                width = request.args.get('width', 10, type=int)
+                height = request.args.get('height', 10, type=int)
+                
+                # Get heatmap data from analytics engine
+                heatmap_data = analytics_engine.get_heatmap(
+                    camera_id=camera_id,
+                    width=width,
+                    height=height
+                )
+                
+                return jsonify({
+                    "camera_id": camera_id,
+                    "width": width,
+                    "height": height,
+                    "heatmap": heatmap_data
+                })
+            except Exception as e:
+                self.logger.error(f"Error in heatmap endpoint: {e}")
+                return jsonify({"error": str(e)}), 500
     
     def _generate_default_html(self):
         """
@@ -501,13 +897,15 @@ class APIManager:
         self.logger.info("Using threading mode for Flask-SocketIO")
         
         try:
-            # Use standard SocketIO run method with threading mode
+            # Use Flask's native run method to ensure all development server messages are shown
             self.socketio.run(
                 self.app, 
                 host=self.host, 
                 port=self.port, 
                 debug=False,
-                use_reloader=False
+                use_reloader=False,
+                log_output=True,
+                allow_unsafe_werkzeug=True  # Allow Werkzeug development server messages
             )
         except Exception as e:
             self.logger.error(f"Error starting API server: {e}")

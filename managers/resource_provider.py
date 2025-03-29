@@ -5,92 +5,100 @@ import os
 import yaml
 import logging
 from logging.handlers import RotatingFileHandler
+import copy
+from datetime import datetime
 
 class ResourceProvider:
     """
     Provides centralized access to configuration and logging resources
     """
     
-    def __init__(self, config_path):
+    def __init__(self, config_path='config.yaml'):
         """
         Initialize the resource provider
         
         Args:
-            config_path (str): Path to the configuration file
+            config_path: Path to the configuration file
         """
-        self.config_path = config_path
-        self.config = self._load_config()
-        self._setup_logging()
-        self.logger = self.get_logger("ResourceProvider")
+        # Load configuration
+        self.config = self._load_config(config_path)
         
-    def _load_config(self):
+        # Configure logging
+        self.logger = self._configure_logging()
+        
+        self.logger.info("ResourceProvider initialized")
+    
+    def _load_config(self, config_path):
         """
         Load configuration from YAML file
         
+        Args:
+            config_path: Path to the configuration file
+            
         Returns:
             dict: Configuration dictionary
         """
         try:
-            with open(self.config_path, 'r') as config_file:
-                config = yaml.safe_load(config_file)
-                return config
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                return config or {}
+            else:
+                print(f"Warning: Config file not found at {config_path}, using defaults")
+                return {}
         except Exception as e:
-            print(f"Error loading configuration: {e}")
-            # Return a default configuration if the file cannot be loaded
-            return {
-                "camera": {"device_id": 0, "width": 640, "height": 480, "fps": 30},
-                "detection": {"confidence_threshold": 0.5, "idle_fps": 1, "active_fps": 5},
-                "api": {"host": "0.0.0.0", "port": 5000, "debug": False},
-                "database": {"path": "database/zvision.db"},
-                "logging": {"level": "INFO", "file": "logs/app.log", "max_size_mb": 10, "backup_count": 3}
-            }
+            print(f"Error loading config: {e}")
+            return {}
     
-    def _setup_logging(self):
+    def _configure_logging(self):
         """
-        Set up the logging system for the application
+        Configure logging based on configuration
+        
+        Returns:
+            logging.Logger: Configured logger
         """
-        # Get logging level from config
-        log_level_str = self.config.get('logging', {}).get('level', 'INFO')
-        log_level = getattr(logging, log_level_str)
+        log_config = self.config.get('logging', {})
+        log_level_str = log_config.get('level', 'INFO')
+        log_level = getattr(logging, log_level_str.upper(), logging.INFO)
         
-        # Set up root logger
-        root_logger = logging.getLogger()
+        # Create logger
+        logger = logging.getLogger('zvision')
+        logger.setLevel(log_level)
         
-        # Clear existing handlers on root logger
-        if root_logger.handlers:
-            root_logger.handlers.clear()
+        # Remove existing handlers
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
         
-        # Set level on root logger
-        root_logger.setLevel(log_level)
-        
-        # Create formatters
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        
-        # Create console handler
+        # Console handler
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
+        console_handler.setLevel(log_level)
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
         
-        # Create file handler if a log file is specified
-        log_file = self.config.get('logging', {}).get('file')
-        if log_file:
-            # Ensure log directory exists
-            log_dir = os.path.dirname(log_file)
-            if log_dir and not os.path.exists(log_dir):
-                os.makedirs(log_dir)
-                
-            # Get max size and backup count
-            max_size_mb = self.config.get('logging', {}).get('max_size_mb', 10)
-            backup_count = self.config.get('logging', {}).get('backup_count', 3)
-            
-            # Create rotating file handler
-            file_handler = RotatingFileHandler(
-                log_file, 
-                maxBytes=max_size_mb * 1024 * 1024,
-                backupCount=backup_count
-            )
-            file_handler.setFormatter(formatter)
-            root_logger.addHandler(file_handler)
+        # File handler
+        log_file = log_config.get('file', 'logs/zvision.log')
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        # Rotating file handler
+        max_size_mb = log_config.get('max_size_mb', 10)
+        backup_count = log_config.get('backup_count', 5)
+        
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, 
+            maxBytes=max_size_mb * 1024 * 1024,
+            backupCount=backup_count
+        )
+        file_handler.setLevel(log_level)
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+        
+        return logger
     
     def get_config(self):
         """
@@ -101,14 +109,49 @@ class ResourceProvider:
         """
         return self.config
     
-    def get_logger(self, name="zvision"):
+    def get_logger(self):
         """
-        Get a logger for a given module name
+        Get the logger
+        
+        Returns:
+            logging.Logger: Logger
+        """
+        return self.logger
+    
+    def clone_with_custom_config(self, custom_config_updates):
+        """
+        Create a new ResourceProvider with a custom configuration
         
         Args:
-            name (str): The name of the module for which to get a logger
+            custom_config_updates: Dictionary of configuration updates to apply
             
         Returns:
-            Logger: Configured logger instance with the given name
+            ResourceProvider: New resource provider with updated configuration
         """
-        return logging.getLogger(name) 
+        # Create a new instance
+        new_provider = ResourceProvider.__new__(ResourceProvider)
+        
+        # Deep copy the config
+        new_provider.config = copy.deepcopy(self.config)
+        
+        # Apply the custom updates by recursive update
+        self._recursive_update(new_provider.config, custom_config_updates)
+        
+        # Share the same logger
+        new_provider.logger = self.logger
+        
+        return new_provider
+    
+    def _recursive_update(self, base_dict, update_dict):
+        """
+        Recursively update a dictionary with another
+        
+        Args:
+            base_dict: Base dictionary to update
+            update_dict: Dictionary of updates to apply
+        """
+        for key, value in update_dict.items():
+            if isinstance(value, dict) and key in base_dict and isinstance(base_dict[key], dict):
+                self._recursive_update(base_dict[key], value)
+            else:
+                base_dict[key] = value 
