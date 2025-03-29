@@ -1,0 +1,44 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simplified ZVision Interface</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        h1 { color: #2c3e50; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { background: #f8f9fa; padding: 20px; border-radius: 5px; margin-top: 20px; }
+        button { background: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #2980b9; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Simplified ZVision Interface</h1>
+        <p>This is a simplified API interface to test basic functionality.</p>
+        <button id="checkStatus">Check API Status</button>
+        <div id="statusDisplay" class="status"></div>
+    </div>
+    
+    <script>
+        document.getElementById('checkStatus').addEventListener('click', function() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('statusDisplay').innerHTML = 
+                        '<h3>API Status</h3>' +
+                        '<p>Status: ' + data.status + '</p>' +
+                        '<p>Time: ' + data.time + '</p>' +
+                        '<p>Uptime: ' + data.uptime + ' seconds</p>' +
+                        '<p>Message: ' + data.message + '</p>';
+                })
+                .catch(error => {
+                    document.getElementById('statusDisplay').innerHTML = 
+                        '<h3>API Status Error</h3>' +
+                        '<p>Error: ' + error + '</p>';
+                });
+        });
+    </script>
+</body>
+</html>
+            

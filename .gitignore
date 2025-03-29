@@ -60,3 +60,12 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *,cover 
+
+# Backup files
+*.bak.*
+*.bak
+*.bak2
+*.bak3
+*.bak4
+*.bak5
+*.bak6
