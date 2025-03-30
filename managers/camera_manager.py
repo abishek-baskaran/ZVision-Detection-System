@@ -61,7 +61,11 @@ class CameraManager:
         self.max_retries = 5
         self.retry_delay = 3
         
-        self.logger.info(f"CameraManager initialized with {'IP camera' if self.is_ip_camera else 'device ' + str(self.device_id)}, "
+        # Failure handling configuration
+        self.max_consecutive_failures = 30  # Increased from 10 to be more patient
+        self.warmup_period = 5.0  # Warm-up period in seconds to ignore initial failures
+        
+        self.logger.info(f"CameraManager initialized with {'IP camera' if self.is_ip_camera else 'video file' if self.is_video_file else 'device ' + str(self.device_id)}, "
                         f"resolution {self.width}x{self.height}, FPS {self.fps}")
     
     def start(self):
@@ -121,6 +125,10 @@ class CameraManager:
         frame_delay = 1.0 / video_fps  # Time between frames
         last_frame_time = time.time()
         
+        # Camera warm-up tracking
+        warmup_start_time = None
+        in_warmup_period = False
+        
         try:
             while self.is_running and retry_count < self.max_retries and not video_finished:
                 try:
@@ -146,6 +154,12 @@ class CameraManager:
                                 video_fps = self.fps  # Fall back to config
                             frame_delay = 1.0 / video_fps
                             self.logger.info(f"Video file FPS: {video_fps}, frame delay: {frame_delay:.4f}s")
+                        
+                        # Start warm-up period for non-video cameras
+                        if not self.is_video_file:
+                            warmup_start_time = time.time()
+                            in_warmup_period = True
+                            self.logger.info(f"Starting {self.warmup_period}s warm-up period for camera")
                     
                     # Check camera opened successfully
                     if not cap.isOpened():
@@ -187,6 +201,13 @@ class CameraManager:
                         if not self.is_running:
                             break
                         
+                        # Check if we're still in warm-up period
+                        if in_warmup_period and warmup_start_time is not None:
+                            elapsed = time.time() - warmup_start_time
+                            if elapsed > self.warmup_period:
+                                in_warmup_period = False
+                                self.logger.info(f"Camera warm-up period complete")
+                        
                         # For video files, control playback speed to match video FPS
                         if self.is_video_file:
                             current_time = time.time()
@@ -204,7 +225,10 @@ class CameraManager:
                             
                             if not ret:
                                 self.logger.warning("Failed to read frame from camera")
-                                consecutive_failures += 1
+                                
+                                # Don't count failures during warm-up period
+                                if not in_warmup_period:
+                                    consecutive_failures += 1
                                 
                                 # For video files, it's normal to reach the end
                                 if self.is_video_file:
@@ -219,13 +243,16 @@ class CameraManager:
                                         break
                                     consecutive_failures = 0
                                 # For IP cameras or too many failures with USB camera, try to reconnect
-                                elif self.is_ip_camera or consecutive_failures > 10:
+                                elif self.is_ip_camera or (not in_warmup_period and consecutive_failures > self.max_consecutive_failures):
                                     self.logger.info(f"Too many consecutive failures ({consecutive_failures}), reconnecting...")
                                     
                                     # Clean release of camera
                                     if cap is not None:
                                         cap.release()
                                         cap = None
+                                    
+                                    # Add a delay before reconnection to allow the camera to reset
+                                    time.sleep(1.0)
                                     break
                                 
                                 # Check if running before sleep

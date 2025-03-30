@@ -68,4 +68,5 @@ coverage.xml
 *.bak3
 *.bak4
 *.bak5
-*.bak6
+*.bak6# Snapshot files
+snapshots/**/*.jpg
