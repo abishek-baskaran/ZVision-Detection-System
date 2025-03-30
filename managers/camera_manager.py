@@ -114,6 +114,7 @@ class CameraManager:
         cap = None
         retry_count = 0
         video_finished = False
+        consecutive_failures = 0
         
         # Variables for video file FPS control
         video_fps = self.fps  # Default to config FPS
@@ -166,6 +167,7 @@ class CameraManager:
                     
                     # Reset retry count on successful connection
                     retry_count = 0
+                    consecutive_failures = 0
                     self.logger.info(f"Camera opened successfully")
                     
                     # For video files, special handling for looping or ending
@@ -180,7 +182,6 @@ class CameraManager:
                     self.current_fps = 0
                     
                     # Start capturing frames
-                    consecutive_failures = 0
                     while self.is_running:
                         # Check if we should exit
                         if not self.is_running:
@@ -217,9 +218,9 @@ class CameraManager:
                                         video_finished = True
                                         break
                                     consecutive_failures = 0
-                                # For IP cameras, try to reconnect
+                                # For IP cameras or too many failures with USB camera, try to reconnect
                                 elif self.is_ip_camera or consecutive_failures > 10:
-                                    self.logger.info("Too many consecutive failures, reconnecting...")
+                                    self.logger.info(f"Too many consecutive failures ({consecutive_failures}), reconnecting...")
                                     
                                     # Clean release of camera
                                     if cap is not None:
