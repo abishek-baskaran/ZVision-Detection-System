@@ -10,6 +10,7 @@ from collections import deque
 import logging
 import psutil
 import os
+from datetime import datetime
 
 class DetectionManager:
     """
@@ -149,7 +150,9 @@ class DetectionManager:
                 "person_detected": False,
                 "last_detection_time": None,
                 "current_direction": self.DIRECTION_UNKNOWN,
-                "no_person_counter": 0
+                "no_person_counter": 0,
+                "last_snapshot_time": 0,  # Track last snapshot time
+                "snapshot_interval": 1.0  # Take snapshot every 1 second
             }
         
         # Initialize position history for direction tracking
@@ -185,7 +188,9 @@ class DetectionManager:
                     "person_detected": False,
                     "last_detection_time": None,
                     "current_direction": self.DIRECTION_UNKNOWN,
-                    "no_person_counter": 0
+                    "no_person_counter": 0,
+                    "last_snapshot_time": 0,  # Track last snapshot time
+                    "snapshot_interval": 1.0  # Take snapshot every 1 second
                 }
             
             # Clear position history
@@ -226,7 +231,9 @@ class DetectionManager:
                 "person_detected": False,
                 "last_detection_time": None,
                 "current_direction": self.DIRECTION_UNKNOWN,
-                "no_person_counter": 0
+                "no_person_counter": 0,
+                "last_snapshot_time": 0,  # Track last snapshot time
+                "snapshot_interval": 1.0  # Take snapshot every 1 second
             }
         
         # Clear position history
@@ -268,7 +275,9 @@ class DetectionManager:
                 "person_detected": False,
                 "last_detection_time": None,
                 "current_direction": self.DIRECTION_UNKNOWN,
-                "no_person_counter": 0
+                "no_person_counter": 0,
+                "last_snapshot_time": 0,  # Track last snapshot time
+                "snapshot_interval": 1.0  # Take snapshot every 1 second
             }
         
         # Detection loop
@@ -360,6 +369,38 @@ class DetectionManager:
         # Update detection state for this camera
         self._update_detection_state(camera_id, person_found, frame, bbox_center_x)
     
+    def _save_snapshot(self, camera_id, frame):
+        """
+        Save a snapshot image
+        
+        Args:
+            camera_id: ID of the camera
+            frame: The frame to save
+            
+        Returns:
+            str: Path to the saved snapshot
+        """
+        SNAPSHOT_DIR = "snapshots"
+        
+        # Create snapshots directory if it doesn't exist
+        if not os.path.exists(SNAPSHOT_DIR):
+            os.makedirs(SNAPSHOT_DIR)
+        
+        # Create camera-specific directory
+        camera_dir = os.path.join(SNAPSHOT_DIR, camera_id)
+        if not os.path.exists(camera_dir):
+            os.makedirs(camera_dir)
+            
+        # Generate timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{camera_dir}/snapshot_{timestamp}.jpg"
+        
+        # Save the image
+        cv2.imwrite(filename, frame)
+        self.logger.info(f"Snapshot saved: {filename}")
+        
+        return filename
+    
     def _update_detection_state(self, camera_id, person_present, frame, center_x):
         """
         Update detection state for a specific camera
@@ -376,13 +417,15 @@ class DetectionManager:
                 "last_detection_time": None,
                 "current_direction": self.DIRECTION_UNKNOWN,
                 "no_person_counter": 0,
-                "last_snapshot_time": 0  # Add timestamp for tracking snapshot frequency
+                "last_snapshot_time": 0,  # Track last snapshot time
+                "snapshot_interval": 1.0  # Take snapshot every 1 second
             }
         
         state = self.states[camera_id]
         current_time = time.time()
         
         if person_present:
+            # Check if this is a new detection or continuous detection
             if not state["person_detected"]:
                 # Person has just appeared
                 state["person_detected"] = True
@@ -391,7 +434,7 @@ class DetectionManager:
                 state["no_person_counter"] = 0
                 state["last_snapshot_time"] = current_time
                 
-                # Save snapshot when person is first detected
+                # Save initial detection snapshot
                 snapshot_path = self._save_snapshot(camera_id, frame)
                 
                 # Record the detection in dashboard
@@ -415,23 +458,23 @@ class DetectionManager:
                 
                 self.logger.info(f"Person detected on camera {camera_id}")
             else:
-                # Person is still present - take snapshot at regular intervals
-                snapshot_interval = 3.0  # Take snapshot every 3 seconds
+                # Continuous detection - capture snapshot every interval
+                time_since_last_snapshot = current_time - state["last_snapshot_time"]
                 
-                if current_time - state["last_snapshot_time"] >= snapshot_interval:
+                if time_since_last_snapshot >= state["snapshot_interval"]:
                     # Time to take another snapshot
                     snapshot_path = self._save_snapshot(camera_id, frame)
                     state["last_snapshot_time"] = current_time
                     
-                    # Log continued detection with new snapshot
+                    # Optionally log continuing detection
                     if self.db_manager:
                         self.db_manager.log_detection_event(
-                            "detection_active", 
+                            "detection_continuing", 
                             camera_id=camera_id,
                             snapshot_path=snapshot_path
                         )
                     
-                    self.logger.debug(f"Ongoing detection snapshot captured for camera {camera_id}")
+                    self.logger.debug(f"Continuous snapshot saved for camera {camera_id}")
             
             # Track position for direction detection
             if center_x is not None:
