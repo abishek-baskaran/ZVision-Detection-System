@@ -13,6 +13,7 @@ from managers.detection_manager import DetectionManager
 from managers.dashboard_manager import DashboardManager
 from managers.api_manager import APIManager
 from managers.database_manager import DatabaseManager
+from managers.storage_manager import start_snapshot_cleanup_thread
 
 class ZVision:
     """
@@ -131,6 +132,21 @@ class ZVision:
         # Set up signal handling for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        # Initialize and start snapshot storage manager
+        self.logger.info("Starting snapshot storage manager...")
+        # Get snapshot settings from config or use defaults
+        snapshot_config = self.config.get('snapshots', {})
+        max_files = snapshot_config.get('max_files', 1000)
+        cleanup_interval = snapshot_config.get('cleanup_interval', 3600)  # Default to hourly cleanup
+        
+        # Start the snapshot cleanup thread
+        self.snapshot_thread = start_snapshot_cleanup_thread(
+            max_files=max_files,
+            interval=cleanup_interval,
+            logger=self.logger
+        )
+        self.logger.info(f"Snapshot storage manager started (max files: {max_files}, interval: {cleanup_interval}s)")
     
     def _signal_handler(self, sig, frame):
         """Handle shutdown signals"""

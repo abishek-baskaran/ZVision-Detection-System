@@ -26,6 +26,11 @@ api:
 database:
   path: "database/zvision.db"  # SQLite database path
   
+# Snapshot settings
+snapshots:
+  max_files: 1000           # Maximum number of snapshot files to keep
+  cleanup_interval: 3600    # Interval in seconds for cleanup (1 hour)
+  
 # Logging settings
 logging:
   level: "INFO"          # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)

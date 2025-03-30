@@ -10,6 +10,7 @@ from collections import deque
 import logging
 import psutil
 import os
+from datetime import datetime
 
 class DetectionManager:
     """
@@ -358,15 +359,43 @@ class DetectionManager:
                 break
         
         # Update detection state for this camera
-        self._update_detection_state(camera_id, person_found, bbox_center_x)
+        self._update_detection_state(camera_id, person_found, frame, bbox_center_x)
     
-    def _update_detection_state(self, camera_id, person_present, center_x):
+    def _save_snapshot(self, camera_id, frame):
+        """
+        Save a snapshot image
+        
+        Args:
+            camera_id: ID of the camera
+            frame: The frame to save
+            
+        Returns:
+            str: Path to the saved snapshot
+        """
+        SNAPSHOT_DIR = "snapshots"
+        
+        # Create snapshots directory if it doesn't exist
+        if not os.path.exists(SNAPSHOT_DIR):
+            os.makedirs(SNAPSHOT_DIR)
+            
+        # Generate timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{SNAPSHOT_DIR}/camera_{camera_id}_{timestamp}.jpg"
+        
+        # Save the image
+        cv2.imwrite(filename, frame)
+        self.logger.info(f"Snapshot saved: {filename}")
+        
+        return filename
+    
+    def _update_detection_state(self, camera_id, person_present, frame, center_x):
         """
         Update detection state for a specific camera
         
         Args:
             camera_id: ID of the camera
             person_present: Whether a person is present in the frame
+            frame: The current frame
             center_x: X-coordinate of the person's bounding box center (or None)
         """
         if camera_id not in self.states:
@@ -386,6 +415,9 @@ class DetectionManager:
                 state["last_detection_time"] = time.time()
                 state["current_direction"] = self.DIRECTION_UNKNOWN
                 state["no_person_counter"] = 0
+                
+                # Save snapshot when person is first detected
+                snapshot_path = self._save_snapshot(camera_id, frame)
                 
                 # Record the detection in dashboard
                 if self.dashboard_manager:
@@ -420,6 +452,9 @@ class DetectionManager:
                 if state["no_person_counter"] >= 5:
                     # Person has disappeared
                     state["person_detected"] = False
+                    
+                    # Save snapshot when person is no longer detected
+                    snapshot_path = self._save_snapshot(camera_id, frame)
                     
                     # Get direction string
                     direction_str = self._get_direction_string(camera_id)
