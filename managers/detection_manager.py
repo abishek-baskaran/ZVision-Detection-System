@@ -377,10 +377,15 @@ class DetectionManager:
         # Create snapshots directory if it doesn't exist
         if not os.path.exists(SNAPSHOT_DIR):
             os.makedirs(SNAPSHOT_DIR)
+        
+        # Create camera-specific directory
+        camera_dir = os.path.join(SNAPSHOT_DIR, camera_id)
+        if not os.path.exists(camera_dir):
+            os.makedirs(camera_dir)
             
         # Generate timestamp for filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{SNAPSHOT_DIR}/camera_{camera_id}_{timestamp}.jpg"
+        filename = f"{camera_dir}/snapshot_{timestamp}.jpg"
         
         # Save the image
         cv2.imwrite(filename, frame)

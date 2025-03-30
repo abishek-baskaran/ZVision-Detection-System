@@ -37,6 +37,7 @@ class SnapshotStorageManager:
     def enforce_fifo(self):
         """
         Delete the oldest files if the maximum number is exceeded
+        Handles each camera subfolder separately
         """
         try:
             # Check if directory exists
@@ -44,8 +45,31 @@ class SnapshotStorageManager:
                 self.logger.warning(f"Snapshot directory {self.directory} does not exist")
                 return
             
+            # Process each camera subdirectory separately
+            camera_dirs = [d for d in self.directory.iterdir() if d.is_dir()]
+            
+            # If no camera directories exist yet, check the main directory
+            if not camera_dirs:
+                self._enforce_fifo_for_dir(self.directory)
+                return
+                
+            # Apply FIFO to each camera directory
+            for camera_dir in camera_dirs:
+                self._enforce_fifo_for_dir(camera_dir)
+                
+        except Exception as e:
+            self.logger.error(f"Error in enforce_fifo: {e}")
+    
+    def _enforce_fifo_for_dir(self, directory):
+        """
+        Apply FIFO cleanup to a specific directory
+        
+        Args:
+            directory: Directory to clean up
+        """
+        try:
             # Get all jpg files in the directory
-            files = list(self.directory.glob("*.jpg"))
+            files = list(directory.glob("*.jpg"))
             
             # Check if we need to delete any files
             if len(files) <= self.max_files:
@@ -67,10 +91,10 @@ class SnapshotStorageManager:
                     self.logger.error(f"Failed to delete {file}: {e}")
             
             remaining = len(files) - len(files_to_delete)
-            self.logger.info(f"FIFO cleanup completed: deleted {len(files_to_delete)} files, remaining: {remaining}")
+            self.logger.info(f"FIFO cleanup completed for {directory}: deleted {len(files_to_delete)} files, remaining: {remaining}")
             
         except Exception as e:
-            self.logger.error(f"Error in enforce_fifo: {e}")
+            self.logger.error(f"Error in _enforce_fifo_for_dir({directory}): {e}")
 
 def start_snapshot_cleanup_thread(directory="snapshots", max_files=1000, interval=3600, logger=None):
     """

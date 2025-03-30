@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime
 import eventlet
-from flask import Flask, request, jsonify, render_template, send_from_directory, Response
+from flask import Flask, request, jsonify, render_template, send_from_directory, Response, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -771,82 +771,97 @@ class APIManager:
         
         # Get camera snapshot history
         @self.app.route('/api/snapshots/<camera_id>', methods=['GET'])
-        def get_camera_snapshots(camera_id):
+        def get_camera_snapshots(self, camera_id):
+            """
+            Get recent snapshots for a specific camera
+            
+            Args:
+                camera_id: ID of the camera
+                
+            Returns:
+                JSON: List of snapshot paths
+            """
             try:
+                # Get limit parameter from query string
                 limit = request.args.get('limit', default=10, type=int)
                 
                 # Check if camera exists
-                if self.camera_registry and not self.camera_registry.get_camera(camera_id):
-                    return jsonify({"error": f"Camera {camera_id} not found"}), 404
+                if not self.camera_registry.get_camera(camera_id):
+                    return jsonify({'error': f'Camera {camera_id} not found'}), 404
                 
-                # Get recent detection events with snapshots for this camera
-                conn = self.db_manager._get_connection()
-                cursor = conn.cursor()
-                
-                query = """
-                    SELECT id, timestamp, event_type, direction, snapshot_path
-                    FROM detection_events
-                    WHERE camera_id = ? AND snapshot_path IS NOT NULL
-                    ORDER BY timestamp DESC
+                # Get recent detection events with snapshots
+                if self.db_manager:
+                    # Query snapshots from database
+                    query = """
+                    SELECT id, timestamp, event_type, direction, snapshot_path 
+                    FROM detection_events 
+                    WHERE camera_id = ? AND snapshot_path IS NOT NULL 
+                    ORDER BY timestamp DESC 
                     LIMIT ?
-                """
-                
-                cursor.execute(query, (camera_id, limit))
-                rows = cursor.fetchall()
-                conn.close()
-                
-                snapshots = []
-                for row in rows:
-                    snapshot_info = {
-                        "id": row[0],
-                        "timestamp": row[1],
-                        "event_type": row[2],
-                        "direction": row[3],
-                        "snapshot_path": row[4]
-                    }
+                    """
+                    rows = self.db_manager.query_db(query, (camera_id, limit))
                     
-                    # Check if the file exists
-                    if row[4] and os.path.exists(row[4]):
-                        snapshot_info["exists"] = True
-                    else:
-                        snapshot_info["exists"] = False
-                        
-                    snapshots.append(snapshot_info)
-                
-                return jsonify({
-                    "camera_id": camera_id,
-                    "count": len(snapshots),
-                    "snapshots": snapshots
-                })
-                
+                    # Convert to list of dictionaries
+                    snapshots = []
+                    for row in rows:
+                        snapshot_path = row['snapshot_path']
+                        # Check if file exists
+                        if os.path.exists(snapshot_path):
+                            # Get relative path for URL construction
+                            rel_path = os.path.basename(snapshot_path)
+                            snapshots.append({
+                                'id': row['id'],
+                                'timestamp': row['timestamp'],
+                                'event_type': row['event_type'],
+                                'direction': row['direction'],
+                                'path': snapshot_path,
+                                'url': f'/api/snapshot-image/{camera_id}/{rel_path}'
+                            })
+                    
+                    return jsonify({
+                        'camera_id': camera_id,
+                        'count': len(snapshots),
+                        'snapshots': snapshots
+                    })
+                else:
+                    return jsonify({'error': 'Database manager not available'}), 500
             except Exception as e:
-                self.logger.error(f"Error retrieving snapshots for camera {camera_id}: {e}")
-                return jsonify({"error": str(e)}), 500
+                self.logger.error(f"Error getting snapshots for camera {camera_id}: {e}")
+                return jsonify({'error': str(e)}), 500
         
-        # Serve specific snapshot by path
-        @self.app.route('/api/snapshot/image/<path:snapshot_path>', methods=['GET'])
-        def get_snapshot_image(snapshot_path):
+        @self.app.route('/api/snapshot-image/<camera_id>/<path:filename>', methods=['GET'])
+        def get_snapshot_image(self, camera_id, filename):
+            """
+            Get a specific snapshot image
+            
+            Args:
+                camera_id: ID of the camera
+                filename: Filename of the snapshot
+                
+            Returns:
+                Image: Snapshot image
+            """
             try:
-                # Ensure the path is within the snapshots directory for security
-                snapshot_dir = os.path.abspath("snapshots")
-                requested_path = os.path.abspath(os.path.join("snapshots", snapshot_path))
+                # Construct path to snapshot file
+                snapshots_dir = os.path.join("snapshots", camera_id)
+                file_path = os.path.join(snapshots_dir, filename)
                 
-                # Check if the requested path is within the snapshots directory
-                if not requested_path.startswith(snapshot_dir):
-                    return jsonify({"error": "Invalid snapshot path"}), 403
+                # Validate that the path is within the snapshots directory
+                snapshots_abs = os.path.abspath("snapshots")
+                file_abs = os.path.abspath(file_path)
                 
-                # Check if the file exists
-                if not os.path.exists(requested_path):
-                    return jsonify({"error": "Snapshot not found"}), 404
+                if not file_abs.startswith(snapshots_abs):
+                    return jsonify({'error': 'Invalid path'}), 403
                 
-                # Serve the file
-                return send_from_directory(os.path.dirname(requested_path), 
-                                         os.path.basename(requested_path),
-                                         mimetype='image/jpeg')
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    return jsonify({'error': 'Snapshot not found'}), 404
                 
+                # Send the file
+                return send_file(file_path, mimetype='image/jpeg')
             except Exception as e:
-                self.logger.error(f"Error serving snapshot {snapshot_path}: {e}")
-                return jsonify({"error": str(e)}), 500
+                self.logger.error(f"Error serving snapshot image {filename}: {e}")
+                return jsonify({'error': str(e)}), 500
     
     def _generate_default_html(self):
         """
