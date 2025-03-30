@@ -427,7 +427,8 @@ class DetectionManager:
                 if self.db_manager:
                     self.db_manager.log_detection_event(
                         "detection_start", 
-                        camera_id=camera_id
+                        camera_id=camera_id,
+                        snapshot_path=snapshot_path
                     )
                 
                 # Emit event via API manager
@@ -481,7 +482,8 @@ class DetectionManager:
                         self.db_manager.log_detection_event(
                             event_type, 
                             direction=direction_str,
-                            camera_id=camera_id
+                            camera_id=camera_id,
+                            snapshot_path=snapshot_path
                         )
                     
                     # Emit event via API manager

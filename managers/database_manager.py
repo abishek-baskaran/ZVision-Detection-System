@@ -78,6 +78,14 @@ class DatabaseManager:
                     # Column doesn't exist, add it
                     cursor.execute("ALTER TABLE detection_events ADD COLUMN camera_id TEXT")
                 
+                # Ensure the detection_events table has a snapshot_path column
+                try:
+                    cursor.execute("SELECT snapshot_path FROM detection_events LIMIT 1")
+                except sqlite3.OperationalError:
+                    # Column doesn't exist, add it
+                    self.logger.info("Adding snapshot_path column to detection_events table")
+                    cursor.execute("ALTER TABLE detection_events ADD COLUMN snapshot_path TEXT")
+                
                 # Create index on camera_id and timestamp for faster analytics queries
                 cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_camera_ts ON detection_events(camera_id, timestamp)
@@ -174,7 +182,7 @@ class DatabaseManager:
                 self.logger.error(f"Error logging event: {e}")
                 return False
     
-    def log_detection_event(self, event_type, direction=None, confidence=None, details=None, camera_id=None):
+    def log_detection_event(self, event_type, direction=None, confidence=None, details=None, camera_id=None, snapshot_path=None):
         """
         Log a detection event to the database
         
@@ -184,6 +192,7 @@ class DatabaseManager:
             confidence: Detection confidence (float)
             details: Additional details (JSON string or text)
             camera_id: ID of the camera that generated the event
+            snapshot_path: Path to saved snapshot image (if any)
             
         Returns:
             bool: True if successful, False otherwise
@@ -202,18 +211,27 @@ class DatabaseManager:
                     cursor.execute("ALTER TABLE detection_events ADD COLUMN camera_id TEXT")
                     conn.commit()
                 
+                # Ensure the detection_events table has a snapshot_path column
+                try:
+                    cursor.execute("SELECT snapshot_path FROM detection_events LIMIT 1")
+                except sqlite3.OperationalError:
+                    # Column doesn't exist, add it
+                    self.logger.info("Adding snapshot_path column to detection_events table")
+                    cursor.execute("ALTER TABLE detection_events ADD COLUMN snapshot_path TEXT")
+                    conn.commit()
+                
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 cursor.execute(
-                    "INSERT INTO detection_events (timestamp, event_type, direction, confidence, details, camera_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (timestamp, event_type, direction, confidence, details, camera_id)
+                    "INSERT INTO detection_events (timestamp, event_type, direction, confidence, details, camera_id, snapshot_path) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (timestamp, event_type, direction, confidence, details, camera_id, snapshot_path)
                 )
                 
                 conn.commit()
                 conn.close()
                 
-                self.logger.debug(f"Logged detection event: {event_type}, direction: {direction}, camera: {camera_id}")
+                self.logger.debug(f"Logged detection event: {event_type}, direction: {direction}, camera: {camera_id}, snapshot: {snapshot_path}")
                 return True
                 
             except Exception as e:
