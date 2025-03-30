@@ -6,8 +6,9 @@ import os
 import time
 import shutil
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 import logging
+from pathlib import Path
 
 # Import required modules
 from managers.storage_manager import SnapshotStorageManager, start_snapshot_cleanup_thread
@@ -45,64 +46,91 @@ class TestStorageManager(unittest.TestCase):
     
     def test_enforce_fifo_basic(self):
         """Test that enforce_fifo deletes oldest files when max_files is exceeded"""
-        # Initialize storage manager with max_files=20
-        storage_manager = SnapshotStorageManager(directory=self.snapshot_dir, max_files=20)
+        # Create a test directory with a fixed set of files for testing
+        test_dir = os.path.join(self.temp_dir, "fifo_basic")
+        os.makedirs(test_dir, exist_ok=True)
         
-        # Initially we have 30 files
-        initial_count = len(os.listdir(self.snapshot_dir))
-        self.assertEqual(initial_count, 30)
+        # Create 30 numbered test files with controlled timestamps
+        for i in range(30):
+            filename = os.path.join(test_dir, f"camera_test_{i:02d}.jpg")
+            with open(filename, 'w') as f:
+                f.write(f"Test snapshot {i}")
+            # Set access/modified time to ensure proper order (oldest first)
+            os.utime(filename, (time.time() - (30 - i), time.time() - (30 - i)))
+        
+        # Initialize storage manager with max_files=20
+        storage_manager = SnapshotStorageManager(directory=test_dir, max_files=20)
         
         # Run FIFO enforcement
         storage_manager.enforce_fifo()
         
         # Should have exactly 20 files left
-        remaining_count = len(os.listdir(self.snapshot_dir))
-        self.assertEqual(remaining_count, 20)
+        remaining_files = os.listdir(test_dir)
+        self.assertEqual(len(remaining_files), 20, f"Expected 20 files, found {len(remaining_files)}")
         
         # The oldest 10 files should be deleted
         for i in range(10):
-            filename = os.path.join(self.snapshot_dir, f"camera_test_{i:02d}.jpg")
+            filename = os.path.join(test_dir, f"camera_test_{i:02d}.jpg")
             self.assertFalse(os.path.exists(filename), f"File {filename} should have been deleted")
         
         # The newest 20 files should remain
         for i in range(10, 30):
-            filename = os.path.join(self.snapshot_dir, f"camera_test_{i:02d}.jpg")
+            filename = os.path.join(test_dir, f"camera_test_{i:02d}.jpg")
             self.assertTrue(os.path.exists(filename), f"File {filename} should still exist")
     
     def test_enforce_fifo_under_limit(self):
         """Test that enforce_fifo doesn't delete files when under the limit"""
-        # Initialize storage manager with max_files=50 (more than we have)
-        storage_manager = SnapshotStorageManager(directory=self.snapshot_dir, max_files=50)
+        # We'll use a real directory with fewer files than the limit
+        test_dir = os.path.join(self.temp_dir, "under_limit")
+        os.makedirs(test_dir, exist_ok=True)
+        
+        # Create only 5 test files
+        test_files = []
+        for i in range(5):
+            filename = os.path.join(test_dir, f"camera_test_{i:02d}.jpg")
+            with open(filename, 'w') as f:
+                f.write(f"Test snapshot {i}")
+            test_files.append(filename)
+        
+        # Initialize storage manager with max_files=10 (more than we have)
+        storage_manager = SnapshotStorageManager(directory=test_dir, max_files=10)
         
         # Run FIFO enforcement
         storage_manager.enforce_fifo()
         
-        # Should still have all 30 files
-        remaining_count = len(os.listdir(self.snapshot_dir))
-        self.assertEqual(remaining_count, 30)
-        
-        # Check all files still exist
-        for i in range(30):
-            filename = os.path.join(self.snapshot_dir, f"camera_test_{i:02d}.jpg")
-            self.assertTrue(os.path.exists(filename), f"File {filename} should still exist")
+        # Should still have all 5 files
+        remaining_files = os.listdir(test_dir)
+        self.assertEqual(len(remaining_files), 5)
     
     def test_enforce_fifo_edge_case(self):
         """Test enforce_fifo with edge cases (max_files=1, empty directory)"""
+        # Create a test directory with a fixed set of files for testing
+        test_dir = os.path.join(self.temp_dir, "fifo_edge")
+        os.makedirs(test_dir, exist_ok=True)
+        
+        # Create 5 numbered test files with controlled timestamps
+        for i in range(5):
+            filename = os.path.join(test_dir, f"camera_test_{i:02d}.jpg")
+            with open(filename, 'w') as f:
+                f.write(f"Test snapshot {i}")
+            # Set access/modified time to ensure proper order (oldest first)
+            os.utime(filename, (time.time() - (5 - i), time.time() - (5 - i)))
+        
         # Test with max_files=1
-        storage_manager = SnapshotStorageManager(directory=self.snapshot_dir, max_files=1)
+        storage_manager = SnapshotStorageManager(directory=test_dir, max_files=1)
         
         # Run FIFO enforcement
         storage_manager.enforce_fifo()
         
         # Should have exactly 1 file left (the newest one)
-        remaining_count = len(os.listdir(self.snapshot_dir))
-        self.assertEqual(remaining_count, 1)
+        remaining_files = os.listdir(test_dir)
+        self.assertEqual(len(remaining_files), 1)
         
         # Check only the newest file exists
-        newest_file = os.path.join(self.snapshot_dir, f"camera_test_29.jpg")
+        newest_file = os.path.join(test_dir, f"camera_test_04.jpg")
         self.assertTrue(os.path.exists(newest_file), f"Newest file should still exist")
         
-        # Now test with empty directory
+        # Test with empty directory
         empty_dir = os.path.join(self.temp_dir, "empty")
         os.makedirs(empty_dir, exist_ok=True)
         

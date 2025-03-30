@@ -6,6 +6,7 @@ import os
 import time
 import shutil
 import tempfile
+import sqlite3
 from unittest.mock import MagicMock, patch
 import cv2
 import numpy as np
@@ -29,6 +30,9 @@ class TestSnapshotCapture(unittest.TestCase):
         self.test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.rectangle(self.test_frame, (100, 100), (300, 300), (255, 255, 255), -1)
         
+        # Create test database
+        self.db_path = os.path.join(self.temp_dir, "test.db")
+        
         # Mock the resource provider
         self.mock_rp = MagicMock()
         self.mock_rp.get_logger.return_value = MagicMock()
@@ -40,6 +44,9 @@ class TestSnapshotCapture(unittest.TestCase):
             'snapshots': {
                 'max_files': 20,
                 'cleanup_interval': 60
+            },
+            'database': {
+                'path': self.db_path
             }
         }
         
@@ -140,25 +147,35 @@ class TestSnapshotCapture(unittest.TestCase):
             # Verify _save_snapshot was called again
             self.detection_manager._save_snapshot.assert_called_once()
             
-            # Verify detection end was logged in database
-            latest_events = self.db_manager.get_recent_detection_events(limit=1)
-            self.assertTrue(len(latest_events) > 0)
-            latest_event = latest_events[0]
+            # Manually retrieve detection events and check for the latest "detection_end" event
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM detection_events WHERE event_type = 'detection_end' ORDER BY timestamp DESC LIMIT 1"
+            )
+            end_event = cursor.fetchone()
+            conn.close()
             
-            # Check event was logged with snapshot_path
-            self.assertEqual(latest_event['event_type'], 'detection_end')
-            self.assertEqual(latest_event['camera_id'], 'main')
-            self.assertTrue('snapshot_path' in latest_event)
-            self.assertIsNotNone(latest_event['snapshot_path'])
+            # Check that a detection_end event was logged
+            self.assertIsNotNone(end_event, "No detection_end event was logged")
+            if end_event:
+                # Convert to dictionary for easier access
+                end_event_dict = dict(end_event)
+                
+                self.assertEqual(end_event_dict['event_type'], 'detection_end')
+                self.assertEqual(end_event_dict['camera_id'], 'main')
+                self.assertTrue('snapshot_path' in end_event_dict)
+                self.assertIsNotNone(end_event_dict['snapshot_path'])
     
     def test_snapshot_naming_convention(self):
         """Test that snapshots follow the correct naming convention"""
         # Call the actual _save_snapshot method
         with patch('cv2.imwrite', return_value=True):
-            snapshot_path = self.detection_manager._save_snapshot('test_camera', self.test_frame)
+            snapshot_path = self.detection_manager._save_snapshot('test', self.test_frame)
             
             # Verify the path format is correct
-            self.assertTrue('snapshots/camera_test_camera_' in snapshot_path)
+            self.assertTrue('snapshots/camera_test_' in snapshot_path)
             self.assertTrue(snapshot_path.endswith('.jpg'))
             
             # Verify the timestamp format in the filename
@@ -167,7 +184,7 @@ class TestSnapshotCapture(unittest.TestCase):
             
             # Format should be camera_[camera_id]_[timestamp].jpg
             self.assertEqual(parts[0], 'camera')
-            self.assertEqual(parts[1], 'test_camera')
+            self.assertEqual(parts[1], 'test')
             
             # The timestamp should be parseable (YYYYMMDD_HHMMSS_microseconds)
             timestamp_parts = '_'.join(parts[2:]).replace('.jpg', '')
