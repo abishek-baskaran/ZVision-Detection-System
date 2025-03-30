@@ -165,4 +165,40 @@ If tests fail or performance is poor:
 2. Verify camera is working properly
 3. Ensure detection model loaded correctly
 4. Check database is accessible and writable
-5. Verify network configuration if testing remotely 
+5. Verify network configuration if testing remotely
+
+# Snapshot Functionality Tests
+
+Several test files have been added to test the snapshot functionality:
+
+## Unit Tests
+
+- **test_snapshot_capture.py**: Tests for the snapshot capture functionality in the DetectionManager, verifying that snapshots are correctly saved and logged in the database.
+- **test_storage_manager.py**: Tests for the SnapshotStorageManager's FIFO cleanup functionality, ensuring that older snapshots are properly deleted when the storage limit is reached.
+- **test_snapshot_api.py**: Tests for the snapshot API endpoints, verifying that snapshots can be retrieved correctly through the API.
+
+## Integration Tests
+
+- **test_integration_snapshot.py**: End-to-end tests of the snapshot workflow, including capture, database logging, and FIFO cleanup. This tests the complete snapshot functionality across multiple components.
+
+## Running the Tests
+
+To run the snapshot tests:
+
+```bash
+# Run all snapshot tests
+python -m unittest tests/unit/test_snapshot_capture.py tests/unit/test_storage_manager.py tests/unit/test_snapshot_api.py tests/unit/test_integration_snapshot.py
+
+# Run a specific test file
+python -m unittest tests/unit/test_snapshot_capture.py
+```
+
+## Validation Criteria
+
+The tests validate that:
+
+1. Snapshots are correctly captured at the start and end of detections
+2. Snapshots are properly deleted in FIFO manner when exceeding the storage limit
+3. Snapshots are correctly logged in the database
+4. Snapshot paths in the database correspond to actual files on disk
+5. The snapshot API endpoints correctly retrieve and serve snapshot images 
