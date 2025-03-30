@@ -2,7 +2,7 @@
 
 # Camera settings
 camera:
-  device_id: 0           # Camera device ID (0 for default camera)
+  device_id: 1           # Camera device ID (1 for USB webcam detected)
   width: 640             # Frame width
   height: 480            # Frame height
   fps: 30                # Camera capture FPS

@@ -43,8 +43,23 @@ class CameraRegistry:
             camera_config = self.config.get('camera', {})
             device_id = camera_config.get('device_id', 0)
             
-            # Add the default camera
-            self.add_camera("main", device_id, "Main Camera", True)
+            # Try to add the default camera
+            success = self.add_camera("main", device_id, "Main Camera", True)
+            
+            # If the default camera didn't work, try alternative indices
+            if not success:
+                self.logger.warning(f"Failed to initialize camera with device_id={device_id}, trying alternatives")
+                
+                # Try other common indices
+                alternative_indices = [1, 0, 2]
+                for alt_id in alternative_indices:
+                    if alt_id == device_id:  # Skip the one we already tried
+                        continue
+                        
+                    self.logger.info(f"Trying camera with device_id={alt_id}")
+                    if self.add_camera("main", alt_id, "Main Camera", True):
+                        self.logger.info(f"Successfully connected to camera with device_id={alt_id}")
+                        break
             
             # Check for video file to use as a second source for testing
             video_path = os.path.join("videos", "cam_test.mp4")
@@ -87,6 +102,14 @@ class CameraRegistry:
                 
                 # Create a new camera manager
                 camera = CameraManager(camera_resource_provider)
+                
+                # Verify the camera can be opened before adding it
+                if isinstance(source, (int, str)) and not isinstance(source, bool):
+                    if not self._test_camera_connection(source):
+                        self.logger.error(f"Failed to open camera source: {source}")
+                        return False
+                
+                # Add to registry and start if enabled
                 self.cameras[camera_id] = camera
                 
                 # Start the camera if enabled
@@ -99,6 +122,33 @@ class CameraRegistry:
             except Exception as e:
                 self.logger.error(f"Error adding camera {camera_id}: {e}")
                 return False
+    
+    def _test_camera_connection(self, source):
+        """
+        Test if a camera can be successfully opened
+        
+        Args:
+            source: Camera source (device ID or URL)
+            
+        Returns:
+            bool: True if camera can be opened, False otherwise
+        """
+        try:
+            cap = cv2.VideoCapture(source)
+            if not cap.isOpened():
+                return False
+                
+            # Try to read a frame to confirm it's working
+            ret, _ = cap.read()
+            
+            # Release the camera
+            cap.release()
+            
+            return ret
+            
+        except Exception as e:
+            self.logger.error(f"Error testing camera connection: {e}")
+            return False
     
     def remove_camera(self, camera_id):
         """
