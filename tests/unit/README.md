@@ -6,6 +6,12 @@ This directory contains unit tests for the ZVision detection system components.
 
 - **test_roi_api.py**: Tests for the ROI configuration API endpoints
 - **test_analytics_engine.py**: Tests for the analytics engine functionality
+- **test_snapshot_capture.py**: Tests for the snapshot capture functionality
+- **test_storage_manager.py**: Tests for the snapshot storage manager
+- **test_snapshot_api.py**: Tests for the snapshot API endpoints
+- **test_integration_snapshot.py**: Integration tests for the snapshot workflow
+- **test_camera_manager.py**: Tests for camera connection reliability features
+- **test_multi_camera_detection.py**: Tests for multi-camera detection functionality
 
 ## Running the Tests
 
@@ -22,6 +28,8 @@ To run a specific test file:
 # Run from project root
 python -m unittest tests/unit/test_roi_api.py
 python -m unittest tests/unit/test_analytics_engine.py
+python -m unittest tests/unit/test_snapshot_capture.py
+python -m unittest tests/unit/test_camera_manager.py
 ```
 
 ## ROI API Tests
@@ -46,6 +54,47 @@ The `test_analytics_engine.py` file tests the following functionality:
 
 These tests verify both the backend analytics calculations and the proper API response formatting, ensuring that the analytics system provides accurate and useful data for multi-camera deployments.
 
+## Snapshot Capture Tests
+
+The `test_snapshot_capture.py` file tests the following functionality:
+
+- Snapshot capture on person detection
+- Continuous snapshot capture during detections
+- Final snapshot capture when a person leaves the frame
+- Proper file naming and directory structure
+- Database logging of snapshot events
+- Camera-specific snapshot organization
+
+## Storage Manager Tests
+
+The `test_storage_manager.py` file tests the following functionality:
+
+- FIFO (First-In-First-Out) snapshot cleanup
+- Camera-specific storage management
+- Maximum file count enforcement
+- Directory creation and management
+- Error handling for missing directories
+
+## Snapshot API Tests
+
+The `test_snapshot_api.py` file tests the following functionality:
+
+- Retrieving recent snapshots for a specific camera
+- Limiting the number of returned snapshots
+- API endpoint for fetching a specific snapshot image
+- Error handling for invalid camera IDs or snapshot paths
+
+## Camera Manager Tests
+
+The `test_camera_manager.py` file tests the following functionality:
+
+- Camera initialization for different source types (USB, IP, video files)
+- Warm-up period implementation for USB cameras
+- Consecutive failure tracking and reconnection
+- Thread management and cleanup
+- Video file looping and frame rate control
+- Error handling during camera initialization and operation
+
 ## Test Coverage
 
 The unit tests aim to verify:
@@ -55,6 +104,8 @@ The unit tests aim to verify:
 3. Integration with the detection manager and analytics engine
 4. Error handling for invalid inputs
 5. Data formatting and aggregation logic
+6. Snapshot capture and storage functionality
+7. Camera reliability and recovery features
 
 ## Dependencies
 

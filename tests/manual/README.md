@@ -7,6 +7,8 @@ This directory contains tools and guides for manually testing the ZVision detect
 - **test_roi_persistence.py**: Tests ROI persistence functionality and database integration
 - **test_roi_html_interface.py**: Tests the HTML interface for drawing and configuring ROI
 - **test_analytics_endpoints.py**: Tests the analytics endpoints for multi-camera data
+- **snapshot_test.py**: Tests the snapshot capture and storage functionality
+- **camera_reliability_test.py**: Tests the camera connection reliability and recovery
 
 ## Running the Tests
 
@@ -56,6 +58,38 @@ This test:
 - Checks camera-specific filtering functionality
 - Validates time period parameter handling
 
+### Snapshot Functionality Test
+
+Tests the snapshot capture, storage, and retrieval functionality:
+
+```bash
+# Run from project root
+python tests/manual/snapshot_test.py
+```
+
+This test:
+- Creates test snapshots in a designated directory
+- Verifies snapshot file creation and naming
+- Tests database logging of snapshot paths
+- Confirms FIFO storage management functionality
+- Validates API endpoints for retrieving snapshots
+
+### Camera Reliability Test
+
+Tests the camera connection recovery and reliability features:
+
+```bash
+# Run from project root
+python tests/manual/camera_reliability_test.py
+```
+
+This test:
+- Simulates camera connection failures
+- Verifies warm-up period functionality
+- Tests consecutive failure handling and reconnection
+- Confirms thread management and cleanup
+- Validates video file handling and looping
+
 ## Manual Testing Checklist
 
 To manually test the ROI functionality:
@@ -101,10 +135,48 @@ To manually test the Analytics functionality:
    - Check that the data format is a 2D matrix of numeric values
    - Test with different width/height parameters
 
+To manually test the Snapshot functionality:
+
+1. **Snapshot Capture**
+   - Walk in front of the camera to trigger a detection
+   - Verify snapshots are saved in the correct camera-specific folder
+   - Confirm that multiple snapshots are taken during the detection
+   - Check that a final snapshot is taken when exiting the frame
+
+2. **FIFO Storage Management**
+   - Create many snapshots by repeatedly triggering detections
+   - Verify that older snapshots are deleted when the limit is reached
+   - Check that the snapshot count stays at or below the configured maximum
+
+3. **API Retrieval**
+   - Access `/api/snapshots/<camera_id>` to list recent snapshots
+   - Verify the snapshot timestamp and metadata
+   - Access individual snapshots using the `/api/snapshot/<path>` endpoint
+   - Check that snapshots are correctly displayed in the browser
+
+To manually test Camera Reliability:
+
+1. **Connection Recovery**
+   - Temporarily disconnect the USB webcam during operation
+   - Reconnect the webcam and verify it automatically recovers
+   - Check logs for warm-up period and reconnection messages
+   
+2. **Video File Handling**
+   - Configure a video file as a camera source
+   - Verify looping functionality when the video ends
+   - Confirm proper frame rate control during playback
+
+3. **Error Handling**
+   - Monitor logs during camera failures
+   - Verify appropriate error messages
+   - Confirm that the UI shows camera status correctly
+
 ## Troubleshooting
 
 If tests fail:
 - Check the server logs for errors
 - Verify the database connection is working
 - Ensure the web server is running properly
-- Check browser console for any JavaScript errors 
+- Check browser console for any JavaScript errors
+- Verify the camera is properly connected and permissions are set correctly
+- Check that snapshot directories exist and are writable 

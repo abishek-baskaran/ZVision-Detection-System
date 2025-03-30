@@ -7,6 +7,7 @@ This directory contains tools for testing the ZVision detection system performan
 - `performance/`: Contains performance testing scripts
 - `manual/`: Contains manual testing checklists and guides
 - `scripts/`: Contains utility scripts for testing setup
+- `unit/`: Contains unit tests for individual components
 
 ## Overview
 
@@ -18,14 +19,22 @@ The testing tools help verify that the ZVision system performs correctly accordi
 4. Detection and tracking functionality
 5. Database logging verification
 6. Multi-camera analytics functionality
+7. Snapshot capture and storage management
+8. Camera connection reliability
 
 ## Test Components
 
 - **performance/test_performance.py**: Automated script to test various aspects of the system
 - **manual/test_checklist.md**: Manual test checklist for verifying functionality
 - **manual/test_roi_persistence.py**: Test script for verifying ROI persistence functionality
+- **manual/snapshot_test.py**: Manual test for snapshot capture functionality
 - **unit/test_roi_api.py**: Unit tests for ROI API endpoints
 - **unit/test_analytics_engine.py**: Unit tests for analytics engine functionality
+- **unit/test_snapshot_capture.py**: Unit tests for snapshot capture functionality
+- **unit/test_storage_manager.py**: Unit tests for snapshot storage FIFO cleanup
+- **unit/test_snapshot_api.py**: Unit tests for snapshot API endpoints
+- **unit/test_integration_snapshot.py**: Integration tests for the snapshot workflow
+- **unit/test_camera_manager.py**: Unit tests for camera manager reliability features
 - **scripts/install_test_dependencies.sh**: Script to install required dependencies
 
 ## Getting Started
@@ -198,7 +207,43 @@ python -m unittest tests/unit/test_snapshot_capture.py
 The tests validate that:
 
 1. Snapshots are correctly captured at the start and end of detections
-2. Snapshots are properly deleted in FIFO manner when exceeding the storage limit
-3. Snapshots are correctly logged in the database
-4. Snapshot paths in the database correspond to actual files on disk
-5. The snapshot API endpoints correctly retrieve and serve snapshot images 
+2. Snapshots are continuously captured during detections at configurable intervals
+3. Snapshots are properly deleted in FIFO manner when exceeding the storage limit
+4. Snapshots are correctly logged in the database
+5. Snapshot paths in the database correspond to actual files on disk
+6. The snapshot API endpoints correctly retrieve and serve snapshot images
+7. Snapshots are organized in camera-specific folders for better organization
+
+# Camera Connection Reliability Tests
+
+Tests have been added to verify the camera connection reliability improvements:
+
+## Unit Tests
+
+- **test_camera_manager.py**: Tests for the CameraManager's reconnection and error handling functionality.
+
+## Manual Tests
+
+- **manual/camera_reliability_test.py**: Script to simulate connection issues and verify automatic recovery.
+
+## Key Reliability Features Tested
+
+1. **Warm-up Period**: Tests verify that the camera has a proper warm-up period where frame reading failures are expected and don't trigger reconnection.
+
+2. **Consecutive Failure Handling**: Tests verify that the system properly tracks consecutive frame reading failures and only attempts reconnection after a configurable threshold.
+
+3. **Connection Recovery**: Tests confirm that the camera manager can recover from connection failures automatically.
+
+4. **Video File Handling**: Tests verify proper handling of video files, including looping and frame rate control.
+
+5. **Thread Management**: Tests ensure proper thread creation, management, and cleanup to prevent resource leaks.
+
+## Running Camera Reliability Tests
+
+```bash
+# Run camera manager unit tests
+python -m unittest tests/unit/test_camera_manager.py
+
+# Run manual reliability test
+python tests/manual/camera_reliability_test.py
+``` 

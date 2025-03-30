@@ -9,9 +9,10 @@ ZVision is a comprehensive detection system that leverages computer vision to:
 1. Detect people in a video stream
 2. Track movement direction (left-to-right or right-to-left)
 3. Count footfall (number of people passing by)
-4. Provide real-time WebSocket notifications
-5. Offer a web dashboard for monitoring
-6. Support multi-camera analytics and comparisons
+4. Capture and store snapshots of detected people
+5. Provide real-time WebSocket notifications
+6. Offer a web dashboard for monitoring
+7. Support multi-camera analytics and comparisons
 
 The system is optimized for Raspberry Pi and balances performance with accuracy by using adaptive processing rates based on detection state.
 
@@ -26,9 +27,11 @@ zvision/
 │   ├── api_manager.py     # API and WebSocket server
 │   ├── analytics_engine.py # Analytics data processing
 │   ├── camera_manager.py  # Camera feed handling
+│   ├── camera_registry.py # Camera registration management
 │   ├── dashboard_manager.py # Dashboard data processing
 │   ├── database_manager.py # SQLite database management
 │   ├── detection_manager.py # YOLOv8 detection processing
+│   ├── storage_manager.py # Snapshot storage management
 │   └── resource_provider.py # Configuration and logging
 ├── models/                # YOLOv8 model files
 ├── static/                # Web static assets (HTML, CSS, JS)
@@ -36,6 +39,9 @@ zvision/
 ├── database/              # Database directory
 │   └── zvision.db         # SQLite database file
 ├── logs/                  # Log files directory
+├── snapshots/             # Captured detection snapshots
+│   ├── main/              # Snapshots from main camera
+│   └── secondary/         # Snapshots from secondary camera
 └── tests/                 # Testing materials
     ├── performance/       # Performance and concurrency testing scripts
     ├── manual/            # Manual testing checklists
@@ -168,6 +174,8 @@ The system provides the following RESTful API endpoints:
 | `/api/frame/current` | GET | Current camera frame as JPEG image |
 | `/api/cameras/<camera_id>/roi` | POST | Set ROI configuration with coordinates and entry direction |
 | `/api/cameras/<camera_id>/roi/clear` | POST | Clear ROI configuration |
+| `/api/snapshots/<camera_id>` | GET | Get recent snapshots for a specific camera |
+| `/api/snapshot/<path>` | GET | Get a specific snapshot image by path |
 | `/video_feed` | GET | MJPEG streaming video feed |
 | `/video_feed/<camera_id>` | GET | MJPEG streaming video feed for specific camera |
 | `/api/cameras` | GET | List all configured cameras |
@@ -248,20 +256,53 @@ The system uses threading for concurrency, with separate threads for:
 
 ## Features
 
-- **Adaptive Frame Processing**: 1 FPS in idle mode, 5+ FPS when people are detected
-- **Direction Detection**: Tracks movement direction using centroid tracking
-- **Real-time Notifications**: WebSocket events for immediate updates
-- **Performance Optimization**: Balances accuracy and resource usage
-- **Dashboard**: Visual monitoring of detections and statistics
-- **RESTful API**: Integration with other systems
-- **Database Logging**: Persistent storage of all detection events
-- **Configurable**: Easily adjust all parameters via config.yaml
-- **Region of Interest (ROI)**: Define specific areas for detection to reduce false positives and enable targeted counting
-- **Entry/Exit Direction Mapping**: Configure which direction counts as entry vs exit
-- **Multi-Camera Support**: Connect and manage multiple camera feeds
-- **Camera Comparison Analytics**: Compare metrics between different cameras
-- **Time Series Analysis**: View detection trends over time
-- **Movement Heatmaps**: Visualize areas with the most movement activity
+### Detection and Tracking
+
+- Real-time person detection using YOLOv8
+- Movement direction tracking (left-to-right or right-to-left)
+- Configurable detection rate (slower when idle, faster when person detected)
+- Region of Interest (ROI) configuration for focused detection
+- Multi-camera support with independent processing
+
+### Snapshot Capture
+
+- Automatic snapshot capture of detected persons
+- Three types of snapshots for complete tracking:
+  - Initial detection snapshot when a person first appears
+  - Continuous detection snapshots at configurable intervals (default: every 1 second)
+  - Final detection snapshot when a person leaves the frame
+- Camera-specific organization in the snapshots directory
+- Intelligent FIFO (First-In-First-Out) storage management to prevent disk space issues
+- API endpoints to retrieve and view snapshots for specific cameras
+
+### Camera Management
+
+- Support for USB webcams, IP cameras (RTSP), and video files
+- Intelligent reconnection handling for USB webcams with warm-up period
+- Automatic retry mechanism for connection failures
+- Video file playback with frame rate control
+- Multi-camera management with independent control
+
+### Analytics
+
+- Real-time footfall counting
+- Direction-based analytics (entries vs. exits)
+- Time-series data for hourly, daily, and weekly trends
+- Cross-camera analytics comparison
+- Heatmap visualization data for movement patterns
+
+### API and Dashboard
+
+- RESTful API for accessing all functionality
+- Real-time WebSocket notifications for detection events
+- Web dashboard for monitoring and configuration
+- MJPEG streaming for video feeds
+
+### Storage and Logging
+
+- SQLite database for event and configuration storage
+- Camera-specific snapshot storage with FIFO cleanup
+- Configurable logging with rotation
 
 ## Region of Interest (ROI) Configuration
 
