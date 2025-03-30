@@ -51,18 +51,23 @@ class SnapshotStorageManager:
             if len(files) <= self.max_files:
                 return
             
-            # Sort files by creation time (oldest first)
-            files.sort(key=lambda x: os.path.getctime(x))
+            # Sort files by modification time (oldest first)
+            files.sort(key=lambda x: os.path.getmtime(str(x)))
             
             # Calculate how many files to delete
-            files_to_delete = files[:len(files) - self.max_files]
+            num_to_delete = len(files) - self.max_files
+            files_to_delete = files[:num_to_delete]
             
             # Delete the oldest files
             for file in files_to_delete:
-                file.unlink()
-                self.logger.info(f"Deleted snapshot: {file}")
+                try:
+                    os.remove(str(file))
+                    self.logger.info(f"Deleted snapshot: {file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to delete {file}: {e}")
             
-            self.logger.info(f"FIFO cleanup completed: deleted {len(files_to_delete)} files, remaining: {self.max_files}")
+            remaining = len(files) - len(files_to_delete)
+            self.logger.info(f"FIFO cleanup completed: deleted {len(files_to_delete)} files, remaining: {remaining}")
             
         except Exception as e:
             self.logger.error(f"Error in enforce_fifo: {e}")
