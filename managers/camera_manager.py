@@ -6,6 +6,7 @@ import time
 import threading
 import queue
 import re
+import os
 
 class CameraManager:
     """
@@ -57,13 +58,21 @@ class CameraManager:
         self.latest_frame = None
         self.frame_lock = threading.Lock()
         
-        # Connection retry settings for IP cameras
-        self.max_retries = 5
+        # Camera initialization lock to prevent race conditions
+        self.initialization_lock = threading.RLock()
+        
+        # Connection retry settings
+        self.max_retries = 10  # Increased from 5 to be more persistent
         self.retry_delay = 3
         
         # Failure handling configuration
-        self.max_consecutive_failures = 30  # Increased from 10 to be more patient
-        self.warmup_period = 5.0  # Warm-up period in seconds to ignore initial failures
+        self.max_consecutive_failures = 50  # Increased from 30 to be more patient
+        self.warmup_period = 10.0  # Increased from 5s to 10s for more reliable initialization
+        
+        # Camera state tracking
+        self.is_initialized = False
+        self.reconnection_attempts = 0
+        self.max_reconnection_attempts = 15  # More attempts before giving up completely
         
         self.logger.info(f"CameraManager initialized with {'IP camera' if self.is_ip_camera else 'video file' if self.is_video_file else 'device ' + str(self.device_id)}, "
                         f"resolution {self.width}x{self.height}, FPS {self.fps}")
@@ -72,43 +81,49 @@ class CameraManager:
         """
         Start the camera capture thread
         """
-        if self.is_running:
-            self.logger.warning("Camera capture thread already running")
-            return
-        
-        self.is_running = True
-        self.thread = threading.Thread(target=self._capture_loop)
-        self.thread.daemon = True
-        self.thread.start()
-        self.logger.info("Camera capture thread started")
+        with self.initialization_lock:
+            if self.is_running:
+                self.logger.warning("Camera capture thread already running")
+                return
+            
+            self.is_running = True
+            # Reset reconnection attempts when explicitly starting
+            self.reconnection_attempts = 0
+            
+            self.thread = threading.Thread(target=self._capture_loop)
+            self.thread.daemon = True
+            self.thread.start()
+            self.logger.info("Camera capture thread started")
     
     def stop(self):
         """
         Stop the camera capture thread
         """
-        self.is_running = False
-        
-        # Set max wait time to 2 seconds total (try 4 times with 0.5s)
-        max_attempts = 4
-        for attempt in range(max_attempts):
+        with self.initialization_lock:
+            self.is_running = False
+            
+            # Set max wait time to 2 seconds total (try 4 times with 0.5s)
+            max_attempts = 4
+            for attempt in range(max_attempts):
+                if self.thread and self.thread.is_alive():
+                    try:
+                        self.thread.join(timeout=0.5)
+                        if not self.thread.is_alive():
+                            break
+                    except Exception as e:
+                        self.logger.error(f"Error joining camera thread: {e}")
+                else:
+                    break
+            
+            # If thread is still alive after timeout, log a warning
             if self.thread and self.thread.is_alive():
-                try:
-                    self.thread.join(timeout=0.5)
-                    if not self.thread.is_alive():
-                        break
-                except Exception as e:
-                    self.logger.error(f"Error joining camera thread: {e}")
+                self.logger.warning("Camera thread did not terminate properly. This could lead to resource leaks.")
             else:
-                break
-        
-        # If thread is still alive after timeout, log a warning
-        if self.thread and self.thread.is_alive():
-            self.logger.warning("Camera thread did not terminate properly. This could lead to resource leaks.")
-        else:
-            self.logger.info("Camera capture thread stopped")
-        
-        # Reset thread reference to avoid join attempts on non-existent thread
-        self.thread = None
+                self.logger.info("Camera capture thread stopped")
+            
+            # Reset thread reference to avoid join attempts on non-existent thread
+            self.thread = None
+            self.is_initialized = False
     
     def _capture_loop(self):
         """
@@ -135,35 +150,53 @@ class CameraManager:
                     # Check if running again before opening camera
                     if not self.is_running:
                         break
-                        
-                    # Open camera
-                    if cap is None:
-                        self.logger.info(f"Opening camera source: {self.device_id}")
-                        cap = cv2.VideoCapture(self.device_id)
-                        
-                        # Set properties for non-IP cameras and non-video files
-                        if not self.is_ip_camera and not self.is_video_file:
-                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                            cap.set(cv2.CAP_PROP_FPS, self.fps)
-                        
-                        # For video files, get the actual FPS from the file
-                        if self.is_video_file:
-                            video_fps = cap.get(cv2.CAP_PROP_FPS)
-                            if video_fps <= 0:  # Invalid FPS
-                                video_fps = self.fps  # Fall back to config
-                            frame_delay = 1.0 / video_fps
-                            self.logger.info(f"Video file FPS: {video_fps}, frame delay: {frame_delay:.4f}s")
-                        
-                        # Start warm-up period for non-video cameras
-                        if not self.is_video_file:
-                            warmup_start_time = time.time()
-                            in_warmup_period = True
-                            self.logger.info(f"Starting {self.warmup_period}s warm-up period for camera")
+                    
+                    # Open camera with lock to prevent race conditions
+                    with self.initialization_lock:
+                        if cap is None and self.is_running:  # Double-check is_running
+                            self.logger.info(f"Opening camera source: {self.device_id}")
+                            # Ensure USB devices have enough time to initialize
+                            if not self.is_ip_camera and not self.is_video_file:
+                                time.sleep(1.0)  # Small delay before opening USB cameras
+                                
+                            cap = cv2.VideoCapture(self.device_id)
+                            
+                            # Set properties for non-IP cameras and non-video files
+                            if not self.is_ip_camera and not self.is_video_file:
+                                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                                cap.set(cv2.CAP_PROP_FPS, self.fps)
+                                # Set buffer size to minimum for USB cameras
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            
+                            # For video files, get the actual FPS from the file
+                            if self.is_video_file:
+                                video_fps = cap.get(cv2.CAP_PROP_FPS)
+                                if video_fps <= 0:  # Invalid FPS
+                                    video_fps = self.fps  # Fall back to config
+                                frame_delay = 1.0 / video_fps
+                                self.logger.info(f"Video file FPS: {video_fps}, frame delay: {frame_delay:.4f}s")
+                            
+                            # Start warm-up period for non-video cameras
+                            if not self.is_video_file:
+                                warmup_start_time = time.time()
+                                in_warmup_period = True
+                                self.logger.info(f"Starting {self.warmup_period}s warm-up period for camera")
+                            
+                            # Mark as initialized for external monitoring
+                            self.is_initialized = cap.isOpened()
                     
                     # Check camera opened successfully
                     if not cap.isOpened():
                         self.logger.error(f"Failed to open camera {self.device_id}")
+                        
+                        # Track reconnection attempts separately from retry count
+                        self.reconnection_attempts += 1
+                        if self.reconnection_attempts >= self.max_reconnection_attempts:
+                            self.logger.error(f"Exceeded maximum reconnection attempts ({self.max_reconnection_attempts}), giving up on camera {self.device_id}")
+                            video_finished = True
+                            break
+                        
                         retry_count += 1
                         if retry_count < self.max_retries and self.is_running:
                             self.logger.info(f"Retrying in {self.retry_delay} seconds... (Attempt {retry_count}/{self.max_retries})")
@@ -224,11 +257,12 @@ class CameraManager:
                             ret, frame = cap.read()
                             
                             if not ret:
-                                self.logger.warning("Failed to read frame from camera")
-                                
-                                # Don't count failures during warm-up period
                                 if not in_warmup_period:
+                                    self.logger.warning(f"Failed to read frame from camera ({consecutive_failures + 1}/{self.max_consecutive_failures})")
                                     consecutive_failures += 1
+                                else:
+                                    # During warm-up, failures are expected and not logged
+                                    consecutive_failures = 0
                                 
                                 # For video files, it's normal to reach the end
                                 if self.is_video_file:
@@ -252,7 +286,7 @@ class CameraManager:
                                         cap = None
                                     
                                     # Add a delay before reconnection to allow the camera to reset
-                                    time.sleep(1.0)
+                                    time.sleep(2.0)  # Increased from 1.0s to give more time for device reset
                                     break
                                 
                                 # Check if running before sleep
@@ -262,6 +296,8 @@ class CameraManager:
                                 continue
                             
                             # Reset consecutive failures when we get a good frame
+                            if consecutive_failures > 0:
+                                self.logger.info(f"Successfully read frame after {consecutive_failures} failures")
                             consecutive_failures = 0
                             
                             # Update last frame time for video FPS control
@@ -318,6 +354,7 @@ class CameraManager:
                 cap.release()
                 
             self.logger.info("Camera resources released")
+            self.is_initialized = False
     
     def get_frame(self, block=False, timeout=None):
         """
@@ -345,4 +382,13 @@ class CameraManager:
         with self.frame_lock:
             if self.latest_frame is not None:
                 return self.latest_frame.copy()
-            return None 
+            return None
+            
+    def is_camera_active(self):
+        """
+        Check if the camera is active and initialized
+        
+        Returns:
+            bool: True if camera is active and initialized, False otherwise
+        """
+        return self.is_running and self.is_initialized 

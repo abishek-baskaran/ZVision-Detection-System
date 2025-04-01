@@ -29,10 +29,14 @@ class CameraRegistry:
         # Lock for thread safety
         self.lock = threading.RLock()
         
+        # Initialization state tracking
+        self.initialized = False
+        
         # Load default camera configuration
         self._init_default_camera()
         
         self.logger.info(f"CameraRegistry initialized with {len(self.cameras)} cameras")
+        self.initialized = True
     
     def _init_default_camera(self):
         """
@@ -85,12 +89,27 @@ class CameraRegistry:
         """
         with self.lock:
             try:
-                # Check if camera ID already exists
-                if camera_id in self.cameras:
-                    self.logger.warning(f"Camera with ID {camera_id} already exists, replacing")
+                # Check if camera ID already exists and if we're already initialized
+                is_replacement = camera_id in self.cameras
+                if is_replacement and self.initialized:
                     old_camera = self.cameras[camera_id]
+                    
+                    # Only handle replacements during database loading if already initialized
+                    # This prevents unnecessary camera open/close cycles
+                    self.logger.info(f"Camera with ID {camera_id} already exists, comparing configurations")
+                    
+                    # If same source type, don't replace - just update name if needed
+                    old_source = old_camera.device_id
+                    if str(old_source) == str(source):
+                        self.logger.info(f"Camera {camera_id} has same source {source}, keeping existing camera")
+                        return True
+                    
+                    # Different source, need to stop old camera before replacement
+                    self.logger.warning(f"Camera with ID {camera_id} has different source, replacing")
                     if old_camera.is_running:
                         old_camera.stop()
+                        # Give time for proper shutdown
+                        time.sleep(0.5)
                 
                 # Create a custom config for this camera
                 camera_config = self.config.get('camera', {}).copy()
@@ -103,8 +122,10 @@ class CameraRegistry:
                 # Create a new camera manager
                 camera = CameraManager(camera_resource_provider)
                 
-                # Verify the camera can be opened before adding it
-                if isinstance(source, (int, str)) and not isinstance(source, bool):
+                # Only test the connection if it's not a replacement and is a real device
+                # We can skip this for the database loading phase to avoid USB reconnection issues
+                if not is_replacement and isinstance(source, (int, str)) and not isinstance(source, bool):
+                    # Verify the camera can be opened before adding it
                     if not self._test_camera_connection(source):
                         self.logger.error(f"Failed to open camera source: {source}")
                         return False
@@ -115,6 +136,11 @@ class CameraRegistry:
                 # Start the camera if enabled
                 if enabled:
                     camera.start()
+                    # Wait for camera to initialize
+                    for _ in range(10):  # Up to 1 second wait
+                        if hasattr(camera, 'is_initialized') and camera.is_initialized:
+                            break
+                        time.sleep(0.1)
                 
                 self.logger.info(f"Added camera {camera_id} ({name or 'unnamed'}) with source {source}")
                 return True
@@ -134,6 +160,18 @@ class CameraRegistry:
             bool: True if camera can be opened, False otherwise
         """
         try:
+            # Check if it's a video file
+            if isinstance(source, str) and (
+                source.endswith('.mp4') or 
+                source.endswith('.avi') or 
+                source.endswith('.mov') or 
+                source.endswith('.mkv')):
+                # For video files, just check if the file exists
+                if os.path.exists(source):
+                    return True
+                return False
+                
+            # For USB or IP cameras, test opening
             cap = cv2.VideoCapture(source)
             if not cap.isOpened():
                 return False
@@ -170,6 +208,8 @@ class CameraRegistry:
                 camera = self.cameras[camera_id]
                 if camera.is_running:
                     camera.stop()
+                    # Give time for proper shutdown
+                    time.sleep(0.5)
                 
                 # Remove from registry
                 del self.cameras[camera_id]
@@ -215,7 +255,7 @@ class CameraRegistry:
             return {
                 camera_id: camera
                 for camera_id, camera in self.cameras.items()
-                if camera.is_running
+                if camera.is_running and (hasattr(camera, 'is_initialized') and camera.is_initialized)
             }
     
     def start_all_cameras(self):
