@@ -200,38 +200,33 @@ class DetectionManager:
         self.detection_threads.clear()
         self.logger.info("Detection stopped for all cameras")
     
-    def stop_camera(self, camera_id, preserve_state=False):
+    def stop_camera(self, camera_id):
         """
         Stop detection for a specific camera
         
         Args:
             camera_id: ID of the camera to stop detection for
-            preserve_state: If True, will preserve the detection state for restarting
         """
         if camera_id not in self.detection_threads:
             self.logger.warning(f"No detection running for camera {camera_id}")
             return
         
+        # Mark thread for stopping
+        # The thread will check self.is_running and self.camera_registry.get_camera(camera_id).is_running
+        thread = self.detection_threads[camera_id]
+        
         # Get the camera
         camera = self.camera_registry.get_camera(camera_id)
-        
-        # Mark thread for stopping
         if camera:
             # Set a flag on the camera to stop detection
             camera._stop_detection = True
-        
-        # Get the thread
-        thread = self.detection_threads[camera_id]
         
         # Wait for the thread to stop
         if thread.is_alive():
             thread.join(timeout=1.0)
         
-        # Remove the thread reference
-        del self.detection_threads[camera_id]
-        
-        # Reset detection state unless preserving for restart
-        if not preserve_state and camera_id in self.states:
+        # Reset detection state
+        if camera_id in self.states:
             self.states[camera_id] = {
                 "person_detected": False,
                 "last_detection_time": None,
@@ -240,17 +235,19 @@ class DetectionManager:
                 "last_snapshot_time": 0,  # Track last snapshot time
                 "snapshot_interval": 1.0  # Take snapshot every 1 second
             }
-            
-            # Clear position history
-            if camera_id in self.position_history:
-                self.position_history[camera_id].clear()
+        
+        # Clear position history
+        if camera_id in self.position_history:
+            self.position_history[camera_id].clear()
+        
+        # Remove the thread reference
+        del self.detection_threads[camera_id]
         
         if camera:
             # Clear the flag
             camera._stop_detection = False
         
-        self.logger.info(f"Detection stopped for camera {camera_id}" + 
-                         (" (preserving state)" if preserve_state else ""))
+        self.logger.info(f"Detection stopped for camera {camera_id}")
     
     def _run_detection_for_camera(self, camera_id):
         """
@@ -334,6 +331,9 @@ class DetectionManager:
         if self.model is None:
             return
         
+        # Get frame dimensions for proper ROI scaling
+        frame_height, frame_width = frame.shape[:2]
+        
         # Run YOLOv8 inference
         results = self.model(frame, conf=self.confidence_threshold, verbose=False)
         
@@ -356,10 +356,41 @@ class DetectionManager:
                     
                     # Check if person is within ROI if ROI is set for this camera
                     if camera_id in self.roi_settings and "coords" in self.roi_settings[camera_id]:
-                        rx1, ry1, rx2, ry2 = self.roi_settings[camera_id]["coords"]
+                        # Get ROI coordinates
+                        roi_coords = self.roi_settings[camera_id]["coords"]
                         
-                        # Skip if person is outside ROI
-                        if not (rx1 <= center_x <= rx2 and ry1 <= center_y <= ry2):
+                        # Convert ROI coordinates to numeric values (handle potential strings)
+                        rx1 = float(roi_coords[0])
+                        ry1 = float(roi_coords[1])
+                        rx2 = float(roi_coords[2])
+                        ry2 = float(roi_coords[3])
+                        
+                        # Add tolerance (2% of frame dimensions) to avoid edge cases
+                        tolerance_x = frame_width * 0.02
+                        tolerance_y = frame_height * 0.02
+                        
+                        # Default 320x240 canvas size used in frontend
+                        canvas_width = 320
+                        canvas_height = 240
+                        
+                        # Scale ROI coordinates from canvas to frame if needed
+                        if frame_width > 1.5 * canvas_width:  # Only scale if frame is significantly larger
+                            scale_x = frame_width / canvas_width
+                            scale_y = frame_height / canvas_height
+                            rx1 = rx1 * scale_x
+                            ry1 = ry1 * scale_y
+                            rx2 = rx2 * scale_x
+                            ry2 = ry2 * scale_y
+                        
+                        # Make sure coordinates are in valid range
+                        rx1 = max(0, min(rx1, frame_width))
+                        ry1 = max(0, min(ry1, frame_height))
+                        rx2 = max(0, min(rx2, frame_width))
+                        ry2 = max(0, min(ry2, frame_height))
+                        
+                        # Skip if person is outside ROI with tolerance
+                        if not ((rx1 - tolerance_x) <= center_x <= (rx2 + tolerance_x) and 
+                                (ry1 - tolerance_y) <= center_y <= (ry2 + tolerance_y)):
                             continue
                     
                     person_found = True
@@ -857,13 +888,6 @@ class DetectionManager:
             else:
                 entry_direction = self.ENTRY_DIRECTION_LTR
                 
-            # Store detection state before ROI update
-            was_running = False
-            if camera_id in self.detection_threads and self.detection_threads[camera_id].is_alive():
-                was_running = True
-                # Stop but preserve detection state
-                self.stop_camera(camera_id, preserve_state=True)
-                
             # Update ROI settings
             self.roi_settings[camera_id] = {
                 "coords": roi_coords,
@@ -875,12 +899,6 @@ class DetectionManager:
                 self.db_manager.save_camera_roi(camera_id, roi_coords, entry_direction)
                 
             self.logger.info(f"Set ROI for camera {camera_id}: {roi_coords}")
-            
-            # Restart detection if it was running before
-            if was_running:
-                self.logger.info(f"Restarting detection for camera {camera_id} after ROI change")
-                self.start_camera(camera_id)
-                
             return True
             
         except Exception as e:
@@ -909,13 +927,6 @@ class DetectionManager:
                 self.logger.error(f"Invalid entry direction: {entry_direction}")
                 return False
                 
-            # Store detection state before update
-            was_running = False
-            if camera_id in self.detection_threads and self.detection_threads[camera_id].is_alive():
-                was_running = True
-                # Stop but preserve detection state 
-                self.stop_camera(camera_id, preserve_state=True)
-                
             # Get existing ROI if available
             roi_coords = None
             if camera_id in self.roi_settings:
@@ -932,12 +943,6 @@ class DetectionManager:
                 self.db_manager.save_camera_roi(camera_id, roi_coords, entry_direction)
                 
             self.logger.info(f"Set entry direction for camera {camera_id}: {entry_direction}")
-            
-            # Restart detection if it was running before
-            if was_running:
-                self.logger.info(f"Restarting detection for camera {camera_id} after entry direction change")
-                self.start_camera(camera_id)
-                
             return True
             
         except Exception as e:
@@ -988,13 +993,6 @@ class DetectionManager:
                 self.logger.error(f"Cannot clear ROI: Camera {camera_id} not found")
                 return False
                 
-            # Store detection state before ROI clear
-            was_running = False
-            if camera_id in self.detection_threads and self.detection_threads[camera_id].is_alive():
-                was_running = True
-                # Stop but preserve detection state
-                self.stop_camera(camera_id, preserve_state=True)
-                
             # Remove ROI settings
             if camera_id in self.roi_settings:
                 del self.roi_settings[camera_id]
@@ -1004,12 +1002,6 @@ class DetectionManager:
                 self.db_manager.delete_camera_roi(camera_id)
                 
             self.logger.info(f"Cleared ROI for camera {camera_id}")
-            
-            # Restart detection if it was running before
-            if was_running:
-                self.logger.info(f"Restarting detection for camera {camera_id} after ROI clear")
-                self.start_camera(camera_id)
-                
             return True
             
         except Exception as e:
