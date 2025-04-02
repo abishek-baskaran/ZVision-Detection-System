@@ -14,7 +14,8 @@ detection:
   idle_fps: 1           # Processing rate when no person detected
   active_fps: 5         # Processing rate when person present
   person_class_id: 0    # Class ID for person in YOLO model
-  direction_threshold: 50  # Minimum pixel movement to determine direction
+  direction_threshold: 50  # Minimum pixel movement to determine direction (fallback)
+  direction_threshold_ratio: 0.1  # Ratio of ROI width to use as threshold (0.1 = 10%)
 
 # API settings
 api:

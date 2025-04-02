@@ -6,6 +6,26 @@
           "-y",
           "@modelcontextprotocol/server-sequential-thinking"
         ]
-      }
-    }
+      },
+      "sqlite": {
+        "command": "uv",
+        "args": [
+          "--directory",
+          "C:/Users/abish/mcp_servers/servers/src/sqlite",
+          "run",
+          "mcp-server-sqlite",
+          "--db-path",
+          "Z:/zvision/database/zvision.db"
+        ]
+      },
+    "git": {
+    "command": "uv",
+    "args": [ 
+      "--directory",
+      "C:/Users/abish/mcp_servers/Servers/src/git",
+      "run",
+      "mcp-server-git"
+    ]
   }
+  }
+}

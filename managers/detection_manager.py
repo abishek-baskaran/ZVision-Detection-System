@@ -51,6 +51,7 @@ class DetectionManager:
         self.active_fps = detection_config.get('active_fps', 5)
         self.person_class_id = detection_config.get('person_class_id', 0)
         self.direction_threshold = detection_config.get('direction_threshold', 20)
+        self.direction_threshold_ratio = detection_config.get('direction_threshold_ratio', 0.1)
         
         # Dictionary to hold detection threads and states for each camera
         self.detection_threads = {}
@@ -431,7 +432,6 @@ class DetectionManager:
         
         # Save the image
         cv2.imwrite(filename, frame)
-        self.logger.info(f"Snapshot saved: {filename}")
         
         return filename
     
@@ -507,8 +507,6 @@ class DetectionManager:
                             camera_id=camera_id,
                             snapshot_path=snapshot_path
                         )
-                    
-                    self.logger.debug(f"Continuous snapshot saved for camera {camera_id}")
             
             # Track position for direction detection
             if center_x is not None:
@@ -614,8 +612,15 @@ class DetectionManager:
         # Calculate movement
         movement = newest_x - oldest_x
         
+        # Get ROI width for this camera to calculate adaptive threshold
+        roi_width = self._get_roi_width(camera_id)
+        # Use configurable ratio of ROI width or fall back to configured threshold
+        adaptive_threshold = roi_width * self.direction_threshold_ratio if roi_width else self.direction_threshold
+        # Ensure a minimum threshold
+        adaptive_threshold = max(adaptive_threshold, 5)
+        
         # Only update direction if movement exceeds threshold
-        if abs(movement) >= self.direction_threshold:
+        if abs(movement) >= adaptive_threshold:
             prev_direction = self.states[camera_id]["current_direction"]
             
             # Determine new direction
@@ -641,6 +646,31 @@ class DetectionManager:
                             "direction": direction_str
                         }
                     )
+    
+    def _get_roi_width(self, camera_id):
+        """
+        Get the ROI width for a specific camera
+        
+        Args:
+            camera_id: ID of the camera
+            
+        Returns:
+            int: ROI width in pixels or None if not set
+        """
+        if camera_id in self.roi_settings and "coords" in self.roi_settings[camera_id]:
+            coords = self.roi_settings[camera_id]["coords"]
+            # ROI coordinates format: [x1, y1, x2, y2]
+            if coords and len(coords) == 4:
+                return coords[2] - coords[0]  # x2 - x1
+        
+        # Get camera frame width as fallback
+        if self.camera_registry:
+            camera = self.camera_registry.get_camera(camera_id)
+            if camera and hasattr(camera, 'frame_width'):
+                return camera.frame_width
+        
+        # Default to 640 if nothing else available (typical camera width)
+        return 640
     
     def _direction_to_string(self, direction):
         """

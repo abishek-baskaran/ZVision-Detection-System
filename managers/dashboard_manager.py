@@ -5,6 +5,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
+import pytz
 
 class DashboardManager:
     """
@@ -81,8 +82,8 @@ class DashboardManager:
             self.detection_count += 1
             self.last_detection_time = time.time()
             
-            # Add to hourly stats
-            hour_key = datetime.now().strftime("%Y-%m-%d %H:00")
+            # Add to hourly stats using UTC timezone
+            hour_key = datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:00")
             self.hourly_stats[hour_key]["detection_count"] += 1
             
             # Track per-camera metrics if camera_id is provided
@@ -124,8 +125,8 @@ class DashboardManager:
                 
             self.last_direction = direction
             
-            # Add to hourly stats
-            hour_key = datetime.now().strftime("%Y-%m-%d %H:00")
+            # Add to hourly stats using UTC timezone
+            hour_key = datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:00")
             self.hourly_stats[hour_key][direction] += 1
             
             # Add to history
@@ -163,30 +164,27 @@ class DashboardManager:
         Record a footfall event (entry or exit)
         
         Args:
-            event_type (str): Type of footfall event ('entry', 'exit', or other)
-            camera_id: Optional camera ID that detected the footfall
+            event_type (str): Type of event ('entry', 'exit', 'detection_end')
+            camera_id: Optional camera ID that detected the event
         """
         with self.metrics_lock:
-            # Normalize the event type to handle different formats
-            normalized_type = event_type.lower()
+            event_key = event_type
             
-            # Map to one of our allowed types
-            if normalized_type == "entry":
-                event_key = "entry"
-            elif normalized_type == "exit":
-                event_key = "exit"
-            else:
+            # Map detection_end to unknown for footfall purposes
+            if event_type == "detection_end":
                 event_key = "unknown"
                 
-            # Increment the appropriate counter
-            self.footfall_counts[event_key] += 1
-            
-            # Add to hourly stats
-            hour_key = datetime.now().strftime("%Y-%m-%d %H:00")
-            self.hourly_stats[hour_key][event_key] += 1
-            
-            # Keep track of the last footfall type
+            # Record in appropriate counter
+            if event_key in self.footfall_counts:
+                self.footfall_counts[event_key] += 1
+            else:
+                self.footfall_counts[event_key] = 1
+                
             self.last_footfall_type = event_key
+            
+            # Add to hourly stats using UTC timezone
+            hour_key = datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:00")
+            self.hourly_stats[hour_key][event_key] += 1
             
             # Track per-camera metrics if camera_id is provided
             if camera_id:
@@ -315,10 +313,11 @@ class DashboardManager:
         Returns:
             dict: Hourly detection statistics
         """
-        now = datetime.now()
+        # Use UTC timezone for consistency
+        now = datetime.now(pytz.UTC)
         start_time = now - timedelta(hours=hours)
         
-        # Format for comparison
+        # Format for comparison - always use UTC for timestamps
         start_hour = start_time.strftime("%Y-%m-%d %H:00")
         
         with self.metrics_lock:
@@ -479,12 +478,13 @@ class DashboardManager:
         with self.metrics_lock:
             return self.footfall_counts.copy()
             
-    def get_detection_metrics_by_day(self, days=7):
+    def get_detection_metrics_by_day(self, days=7, camera_id=None):
         """
         Get detection metrics grouped by day for the specified period
         
         Args:
             days: Number of days to include (default: 7)
+            camera_id: Optional camera ID to filter metrics for
             
         Returns:
             dict: Daily detection metrics
@@ -493,34 +493,45 @@ class DashboardManager:
         now = datetime.now()
         
         with self.metrics_lock:
-            # Process hourly stats to create daily aggregates
-            for hour_key, stats in self.hourly_stats.items():
-                try:
-                    # Parse hour_key (format: "YYYY-MM-DD HH:00")
-                    hour_date = datetime.strptime(hour_key, "%Y-%m-%d %H:00")
-                    
-                    # Check if within the specified days
-                    if (now - hour_date).days <= days:
-                        # Extract just the date part
-                        date_key = hour_date.strftime("%Y-%m-%d")
+            # If requesting camera-specific metrics and we have them
+            if camera_id and hasattr(self, 'camera_metrics') and camera_id in self.camera_metrics:
+                # For camera-specific data, we'll just use current data for today
+                camera_data = self.camera_metrics[camera_id]
+                
+                # Create a single entry with current date
+                today = now.strftime("%Y-%m-%d")
+                daily_metrics[today] = camera_data.copy()
+                
+                return daily_metrics
+            else:
+                # Process hourly stats to create daily aggregates
+                for hour_key, stats in self.hourly_stats.items():
+                    try:
+                        # Parse hour_key (format: "YYYY-MM-DD HH:00")
+                        hour_date = datetime.strptime(hour_key, "%Y-%m-%d %H:00")
                         
-                        # Initialize date entry if not exists
-                        if date_key not in daily_metrics:
-                            daily_metrics[date_key] = {
-                                "detection_count": 0,
-                                "left_to_right": 0,
-                                "right_to_left": 0,
-                                "unknown": 0
-                            }
-                        
-                        # Add hourly stats to daily totals
-                        daily_metrics[date_key]["detection_count"] += stats["detection_count"]
-                        daily_metrics[date_key]["left_to_right"] += stats["left_to_right"]
-                        daily_metrics[date_key]["right_to_left"] += stats["right_to_left"]
-                        daily_metrics[date_key]["unknown"] += stats["unknown"]
-                except Exception as e:
-                    self.logger.error(f"Error processing hourly stats for {hour_key}: {e}")
-                    continue
+                        # Check if within the specified days
+                        if (now - hour_date).days <= days:
+                            # Extract just the date part
+                            date_key = hour_date.strftime("%Y-%m-%d")
+                            
+                            # Initialize date entry if not exists
+                            if date_key not in daily_metrics:
+                                daily_metrics[date_key] = {
+                                    "detection_count": 0,
+                                    "left_to_right": 0,
+                                    "right_to_left": 0,
+                                    "unknown": 0
+                                }
+                            
+                            # Add hourly stats to daily totals
+                            daily_metrics[date_key]["detection_count"] += stats["detection_count"]
+                            daily_metrics[date_key]["left_to_right"] += stats["left_to_right"]
+                            daily_metrics[date_key]["right_to_left"] += stats["right_to_left"]
+                            daily_metrics[date_key]["unknown"] += stats["unknown"]
+                    except Exception as e:
+                        self.logger.error(f"Error processing hourly stats for {hour_key}: {e}")
+                        continue
         
         return daily_metrics
     

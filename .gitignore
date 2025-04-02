@@ -70,3 +70,5 @@ coverage.xml
 *.bak5
 *.bak6# Snapshot files
 snapshots/**/*.jpg
+
+.cursor/

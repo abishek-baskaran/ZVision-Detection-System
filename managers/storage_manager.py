@@ -31,8 +31,6 @@ class SnapshotStorageManager:
         
         # Set up logging
         self.logger = logger or logging.getLogger(__name__)
-        
-        self.logger.info(f"SnapshotStorageManager initialized with max files: {max_files}")
     
     def enforce_fifo(self):
         """
@@ -86,12 +84,10 @@ class SnapshotStorageManager:
             for file in files_to_delete:
                 try:
                     os.remove(str(file))
-                    self.logger.info(f"Deleted snapshot: {file}")
                 except Exception as e:
                     self.logger.error(f"Failed to delete {file}: {e}")
             
             remaining = len(files) - len(files_to_delete)
-            self.logger.info(f"FIFO cleanup completed for {directory}: deleted {len(files_to_delete)} files, remaining: {remaining}")
             
         except Exception as e:
             self.logger.error(f"Error in _enforce_fifo_for_dir({directory}): {e}")
@@ -113,7 +109,6 @@ def start_snapshot_cleanup_thread(directory="snapshots", max_files=1000, interva
     
     def periodic_snapshot_cleanup():
         storage_manager = SnapshotStorageManager(directory, max_files, logger)
-        logger.info(f"Starting periodic snapshot cleanup (interval: {interval}s, max files: {max_files})")
         
         while True:
             try:
@@ -133,7 +128,6 @@ def start_snapshot_cleanup_thread(directory="snapshots", max_files=1000, interva
     thread.name = "snapshot-cleanup"
     thread.start()
     
-    logger.info("Snapshot cleanup thread started")
     return thread
 
 if __name__ == "__main__":

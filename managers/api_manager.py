@@ -177,6 +177,7 @@ class APIManager:
                 return jsonify({"error": "Camera registry not available"}), 500
             
             try:
+                self.logger.info("GET request received for /api/cameras")
                 all_cameras = self.camera_registry.get_all_cameras()
                 camera_list = []
                 
@@ -247,6 +248,7 @@ class APIManager:
                 return jsonify({"error": "Camera registry not available"}), 500
             
             try:
+                self.logger.info(f"GET request received for /api/cameras/{camera_id}")
                 camera = self.camera_registry.get_camera(camera_id)
                 if camera is None:
                     return jsonify({"error": f"Camera {camera_id} not found"}), 404
@@ -300,6 +302,7 @@ class APIManager:
                 return jsonify({"error": "Camera registry not available"}), 500
             
             try:
+                self.logger.info(f"PUT request received for /api/cameras/{camera_id}")
                 camera = self.camera_registry.get_camera(camera_id)
                 if camera is None:
                     return jsonify({"error": f"Camera {camera_id} not found"}), 404
@@ -384,6 +387,7 @@ class APIManager:
                 return jsonify({"error": "Camera registry not available"}), 500
             
             try:
+                self.logger.info(f"GET request received for /api/cameras/{camera_id}/status")
                 camera = self.camera_registry.get_camera(camera_id)
                 if camera is None:
                     return jsonify({"error": f"Camera {camera_id} not found"}), 404
@@ -432,6 +436,7 @@ class APIManager:
         @self.app.route('/api/status', methods=['GET'])
         def get_status():
             try:
+                self.logger.info("GET request received for /api/status")
                 # Collect individual parts with separate try/except blocks
                 system_status = {
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -503,8 +508,20 @@ class APIManager:
         @self.app.route('/api/events', methods=['GET'])
         def get_events():
             try:
+                self.logger.info("GET request received for /api/events")
+                
+                # Get parameters
                 limit = request.args.get('limit', 50, type=int)
-                events = self.db_manager.get_events(limit=limit)
+                from_date = request.args.get('from')
+                to_date = request.args.get('to')
+                
+                # Get events with date filtering
+                events = self.db_manager.get_events(
+                    limit=limit,
+                    from_date=from_date,
+                    to_date=to_date
+                )
+                
                 return jsonify(events)
             except Exception as e:
                 self.logger.error(f"Error in events endpoint: {e}")
@@ -514,85 +531,187 @@ class APIManager:
         @self.app.route('/api/detections/recent', methods=['GET'])
         def get_recent_detections():
             try:
-                # Get count parameter, default to 10
+                # Get parameters
                 count = request.args.get('count', 10, type=int)
+                from_date = request.args.get('from')
+                to_date = request.args.get('to')
                 
                 # Get recent detections from database
-                recent = self.db_manager.get_recent_detection_events(limit=count)
+                recent = self.db_manager.get_recent_detection_events(
+                    limit=count,
+                    from_date=from_date,
+                    to_date=to_date
+                )
                 
                 return jsonify(recent)
             except Exception as e:
                 self.logger.error(f"Error in recent detections endpoint: {e}")
                 return jsonify({"error": str(e)}), 500
         
-        # Metrics endpoint - Get system metrics
+        # Metrics endpoint - Get detailed metrics for the dashboard
         @self.app.route('/api/metrics', methods=['GET'])
-        def get_metrics():
+        def get_metrics_endpoint():
             try:
-                # Get metrics from dashboard manager
-                total_metrics = self.dashboard_manager.get_total_metrics()
+                self.logger.info("GET request received for /api/metrics")
                 
-                # Get hourly metrics (default 24 hours)
-                hours = request.args.get('hours', 24, type=int)
-                hourly_metrics = self.dashboard_manager.get_hourly_metrics(hours=hours)
+                # Get camera ID parameter
+                cam_id = request.args.get('cam_id')
                 
-                # Get footfall count explicitly
-                footfall_count = self.dashboard_manager.get_footfall_count()
+                # Log the camera ID for debugging
+                self.logger.info(f"Raw camera_id from request: '{cam_id}'")
                 
-                metrics = {
-                    "total": total_metrics,
-                    "hourly": hourly_metrics,
-                    "footfall_count": footfall_count
-                }
+                # Validate camera ID and provide a clearer error message
+                if cam_id:
+                    if not self.db_manager.is_camera_valid(cam_id):
+                        # Log a warning but continue with empty metrics instead of error
+                        self.logger.warning(f"Camera '{cam_id}' not found in database, returning empty metrics")
+                        return jsonify({
+                            "total": 0, 
+                            "change": 0, 
+                            "hourlyData": [], 
+                            "directions": {
+                                "ltr": 0, 
+                                "rtl": 0, 
+                                "ltrPercentage": 0, 
+                                "rtlPercentage": 0, 
+                                "change": 0
+                            },
+                            "camera_id": cam_id,
+                            "warning": f"No data found for camera '{cam_id}'"
+                        })
                 
+                # Get time range parameter
+                time_range = request.args.get('timeRange', '24h')
+                
+                # Get metrics using our new method
+                metrics = self.get_metrics(time_range, cam_id)
+                
+                # Add the camera_id to the response for clarity
+                if isinstance(metrics, dict) and not "error" in metrics:
+                    metrics["camera_id"] = cam_id
+                
+                # Return as JSON
                 return jsonify(metrics)
+                
             except Exception as e:
-                self.logger.error(f"Error in metrics endpoint: {e}")
+                self.logger.error(f"Error in metrics endpoint: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
         
         # Daily metrics endpoint - Get metrics aggregated by day
         @self.app.route('/api/metrics/daily', methods=['GET'])
         def get_daily_metrics():
             try:
+                self.logger.info("GET request received for /api/metrics/daily")
+                
+                # Get camera ID parameter
+                cam_id = request.args.get('cam_id')
+                
+                # Log the camera ID for debugging
+                self.logger.info(f"Raw camera_id from request: '{cam_id}'")
+                
+                # Validate camera ID if provided
+                if cam_id and self.camera_registry and not self.camera_registry.get_camera(cam_id):
+                    return jsonify({"error": f"Camera {cam_id} not found"}), 404
+                
                 # Get days parameter, default to 7
                 days = request.args.get('days', 7, type=int)
                 
-                # Get daily metrics from dashboard manager
-                daily_metrics = self.dashboard_manager.get_detection_metrics_by_day(days=days)
+                # Get time range parameter
+                time_range = request.args.get('timeRange')
                 
-                return jsonify(daily_metrics)
+                # Parse timeRange parameter if provided (e.g., "7d")
+                if time_range and time_range.endswith('d'):
+                    try:
+                        days = int(time_range[:-1])
+                    except ValueError:
+                        pass
+                
+                # Get daily metrics from database
+                daily_data = []
+                
+                # Get hourly metrics from database for camera-specific data
+                hourly_metrics = self.db_manager.get_hourly_metrics(hours=days*24, camera_id=cam_id)
+                
+                # Aggregate hourly data into daily counts
+                daily_counts = {}
+                for hour_key, hour_metrics in hourly_metrics.items():
+                    try:
+                        # Extract the date part (e.g., "2025-04-02" from "2025-04-02 05:00")
+                        date_str = hour_key.split(" ")[0]
+                        
+                        # Initialize date entry if not exists
+                        if date_str not in daily_counts:
+                            daily_counts[date_str] = 0
+                        
+                        # Add hourly count to daily total
+                        daily_counts[date_str] += hour_metrics.get("detection_count", 0)
+                    except Exception as e:
+                        self.logger.error(f"Error processing hour key {hour_key}: {e}")
+                
+                # Convert to array format
+                for date, count in daily_counts.items():
+                    daily_data.append({
+                        "date": date,
+                        "count": count
+                    })
+                
+                # Sort by date
+                daily_data.sort(key=lambda x: x["date"])
+                
+                return jsonify(daily_data)
             except Exception as e:
-                self.logger.error(f"Error in daily metrics endpoint: {e}")
+                self.logger.error(f"Error in daily metrics endpoint: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
         
-        # Metrics summary endpoint - Get cumulative metrics over time
+        # Metrics summary endpoint - Get simplified metrics summary
         @self.app.route('/api/metrics/summary', methods=['GET'])
-        def get_metrics_summary():
+        def get_metrics_summary_endpoint():
             try:
-                # Get days parameter, default to 7
-                days = request.args.get('days', 7, type=int)
+                self.logger.info("GET request received for /api/metrics/summary")
                 
-                # Get direction counts from database for long-term analytics
-                direction_counts = self.db_manager.get_detection_count_by_direction(days=days)
+                # Get camera ID parameter
+                cam_id = request.args.get('cam_id')
                 
-                # Calculate total detections
-                total_detections = sum(direction_counts.values())
+                # Log the camera ID for debugging
+                self.logger.info(f"Raw camera_id from request: '{cam_id}'")
                 
-                summary = {
-                    "period_days": days,
-                    "total_detections": total_detections,
-                    "direction_counts": direction_counts
-                }
+                # Validate camera ID and provide a clearer error message
+                if cam_id:
+                    if not self.db_manager.is_camera_valid(cam_id):
+                        # Log a warning but continue with empty metrics instead of error
+                        self.logger.warning(f"Camera '{cam_id}' not found in database, returning empty metrics")
+                        return jsonify({
+                            "totalDetections": 0,
+                            "avgPerDay": 0,
+                            "peakHour": "N/A",
+                            "peakCount": 0,
+                            "change": 0,
+                            "camera_id": cam_id,
+                            "warning": f"No data found for camera '{cam_id}'"
+                        })
                 
+                # Get time range parameter
+                time_range = request.args.get('timeRange', '7d')
+                
+                # Get metrics summary using our new method
+                summary = self.get_metrics_summary(time_range, cam_id)
+                
+                # Add the camera_id to the response for clarity
+                if isinstance(summary, dict) and not "error" in summary:
+                    summary["camera_id"] = cam_id
+                
+                # Return as JSON
                 return jsonify(summary)
+                
             except Exception as e:
-                self.logger.error(f"Error in metrics summary endpoint: {e}")
+                self.logger.error(f"Error in metrics summary endpoint: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
         
         # Current frame endpoint (latest snapshot)
         @self.app.route('/api/frame/current', methods=['GET'])
         def get_current_frame():
             try:
+                self.logger.info("GET request received for /api/frame/current")
                 # Get latest frame
                 frame = self.camera_manager.get_latest_frame()
                 
@@ -616,6 +735,7 @@ class APIManager:
         @self.app.route('/api/settings', methods=['GET'])
         def get_settings():
             try:
+                self.logger.info("GET request received for /api/settings")
                 # Get all settings from config (for now, in future may use DB)
                 settings = self.config
                 
@@ -632,6 +752,7 @@ class APIManager:
         @self.app.route('/api/detection/stop', methods=['POST'])
         def stop_detection():
             try:
+                self.logger.info("POST request received for /api/detection/stop")
                 self.detection_manager.stop()
                 self.logger.info("Detection stopped via API")
                 return jsonify({"message": "Detection stopped", "active": False})
@@ -642,6 +763,7 @@ class APIManager:
         @self.app.route('/api/detection/start', methods=['POST'])
         def start_detection():
             try:
+                self.logger.info("POST request received for /api/detection/start")
                 self.detection_manager.start()
                 self.logger.info("Detection started via API")
                 return jsonify({"message": "Detection started", "active": True})
@@ -653,6 +775,7 @@ class APIManager:
         @self.app.route('/api/cameras/<camera_id>/roi', methods=['POST'])
         def set_roi(camera_id):
             try:
+                self.logger.info(f"POST request received for /api/cameras/{camera_id}/roi")
                 data = request.get_json()
                 roi = (data['x1'], data['y1'], data['x2'], data['y2'])
                 entry_dir = data['entry_direction']
@@ -693,23 +816,63 @@ class APIManager:
                 hours = request.args.get('hours', 24, type=int)
                 days = request.args.get('days', None, type=int)
                 
+                # Get time range parameter
+                time_range = request.args.get('timeRange')
+                
+                # Parse timeRange parameter if provided (e.g., "24h", "7d")
+                if time_range:
+                    if time_range.endswith('h'):
+                        try:
+                            hours = int(time_range[:-1])
+                            days = None  # Prioritize hours if specified in timeRange
+                        except ValueError:
+                            pass
+                    elif time_range.endswith('d'):
+                        try:
+                            days = int(time_range[:-1])
+                        except ValueError:
+                            pass
+                
                 # Convert days to hours if specified
                 if days is not None:
                     hours = days * 24
                 
-                # Use the analytics engine to get entry counts
-                metrics = analytics_engine.get_camera_entry_counts(
+                # Get entry counts for each camera
+                camera_counts = analytics_engine.get_camera_entry_counts(
                     last_hours=hours,
                     camera_registry=self.camera_registry
                 )
                 
-                # Calculate aggregated total
-                total_count = sum(metrics.values())
+                # Get camera details and direction counts
+                cameras_data = []
+                for camera_id, count in camera_counts.items():
+                    # Get camera name 
+                    camera_name = f"Camera {camera_id}"
+                    if self.camera_registry:
+                        camera = self.camera_registry.get_camera(camera_id)
+                        if camera and hasattr(camera, 'name'):
+                            camera_name = camera.name
+                    
+                    # Get direction counts for this camera
+                    direction_counts = self.db_manager.get_detection_count_by_direction(
+                        days=hours/24, 
+                        camera_id=camera_id
+                    )
+                    
+                    # Add camera data
+                    cameras_data.append({
+                        "name": camera_name,
+                        "id": camera_id,
+                        "count": count,
+                        "ltr": direction_counts.get("left_to_right", 0),
+                        "rtl": direction_counts.get("right_to_left", 0)
+                    })
+                
+                # Sort by count (descending)
+                cameras_data.sort(key=lambda x: x["count"], reverse=True)
                 
                 return jsonify({
-                    "time_period": f"Last {hours} hours",
-                    "camera_counts": metrics,
-                    "total": total_count
+                    "cameras": cameras_data
                 })
                 
             except Exception as e:
@@ -782,6 +945,7 @@ class APIManager:
                 JSON: List of snapshot paths
             """
             try:
+                self.logger.info(f"GET request received for /api/snapshots/{camera_id}")
                 # Get limit parameter from query string
                 limit = request.args.get('limit', default=10, type=int)
                 
@@ -842,6 +1006,7 @@ class APIManager:
                 Image: Snapshot image
             """
             try:
+                self.logger.info(f"GET request received for /api/snapshot-image/{camera_id}/{filename}")
                 # Construct path to snapshot file
                 snapshots_dir = os.path.join("snapshots", camera_id)
                 file_path = os.path.join(snapshots_dir, filename)
@@ -862,6 +1027,39 @@ class APIManager:
             except Exception as e:
                 self.logger.error(f"Error serving snapshot image {filename}: {e}")
                 return jsonify({'error': str(e)}), 500
+        
+        # Diagnostic endpoint for raw metrics data
+        @self.app.route('/api/debug/metrics/raw', methods=['GET'])
+        def get_raw_metrics_data():
+            try:
+                # Get camera ID parameter
+                cam_id = request.args.get('cam_id')
+                
+                # Get time range parameter
+                time_range = request.args.get('timeRange', '7d')
+                
+                # Convert to hours
+                hours = self._time_range_to_hours(time_range)
+                if hours is None:
+                    return jsonify({"error": f"Invalid time range: {time_range}"}), 400
+                
+                # Get raw metrics data
+                raw_data = self.db_manager.get_hourly_metrics_raw(hours=hours, camera_id=cam_id)
+                
+                # Also add some system diagnostics
+                diagnostics = {
+                    "raw_query_results": raw_data,
+                    "camera_id": cam_id,
+                    "time_range": time_range,
+                    "hours": hours,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "db_path": self.db_manager.db_path
+                }
+                
+                return jsonify(diagnostics)
+            except Exception as e:
+                self.logger.error(f"Error in raw metrics diagnostic endpoint: {e}")
+                return jsonify({"error": str(e)}), 500
     
     def _generate_default_html(self):
         """
@@ -1015,3 +1213,193 @@ class APIManager:
         
         # For future implementation with a proper server
         pass 
+
+    def _time_range_to_hours(self, time_range):
+        """
+        Convert a time range string to hours
+        
+        Args:
+            time_range: A string representing the time range (e.g., "24h", "7d")
+            
+        Returns:
+            int: The number of hours in the time range, or None if the format is invalid
+        """
+        if time_range:
+            if time_range.endswith('h'):
+                try:
+                    return int(time_range[:-1])
+                except ValueError:
+                    pass
+            elif time_range.endswith('d'):
+                try:
+                    days = int(time_range[:-1])
+                    return days * 24
+                except ValueError:
+                    pass
+        return None 
+
+    def get_metrics(self, time_range, cam_id=None):
+        """
+        Get metrics data for the specified time range and camera ID
+        
+        Args:
+            time_range: Time range string (e.g., "24h", "7d")
+            cam_id: Optional camera ID to filter by
+            
+        Returns:
+            dict: Metrics data in the format expected by the frontend
+        """
+        try:
+            # Log camera_id to verify it's being passed correctly
+            self.logger.info(f"Getting metrics for camera_id: {cam_id}, time_range: {time_range}")
+            
+            # Convert time_range to hours
+            hours = self._time_range_to_hours(time_range)
+            if hours is None:
+                return {"error": f"Invalid time range: {time_range}"}
+                
+            # Get hourly metrics from database for camera-specific data
+            hourly_metrics = self.db_manager.get_hourly_metrics(hours=hours, camera_id=cam_id)
+            
+            # Log the raw metrics for debugging
+            self.logger.info(f"Raw hourly metrics for {cam_id}: {hourly_metrics}")
+            
+            # Calculate total counts
+            ltr_count = 0
+            rtl_count = 0
+            total_count = 0
+            
+            for hour_data in hourly_metrics.values():
+                ltr_count += hour_data.get("left_to_right", 0)
+                rtl_count += hour_data.get("right_to_left", 0)
+                total_count += hour_data.get("detection_count", 0)
+            
+            # Calculate percentages
+            ltr_percentage = 0
+            rtl_percentage = 0
+            total_directions = ltr_count + rtl_count
+            
+            if total_directions > 0:
+                ltr_percentage = round((ltr_count / total_directions) * 100, 1)
+                rtl_percentage = round((rtl_count / total_directions) * 100, 1)
+            
+            # Transform hourly data to array format with date and hour
+            hourly_data = []
+            for hour_key, hour_metrics in hourly_metrics.items():
+                # Parse the timestamp (format: "YYYY-MM-DD HH:00")
+                try:
+                    dt = datetime.strptime(hour_key, "%Y-%m-%d %H:00")
+                    date_str = dt.strftime("%Y-%m-%d")
+                    hour_str = dt.strftime("%H:%M")
+                except:
+                    # Fallback if parsing fails
+                    parts = hour_key.split(" ")
+                    date_str = parts[0] if len(parts) > 0 else "Unknown"
+                    hour_str = parts[1] if len(parts) > 1 else "00:00"
+                    
+                hourly_data.append({
+                    "hour": hour_str,
+                    "date": date_str,
+                    "count": hour_metrics.get("detection_count", 0)
+                })
+            
+            # Sort hourly data by date and hour
+            hourly_data.sort(key=lambda x: f"{x['date']} {x['hour']}")
+            
+            # Log the processed data
+            self.logger.info(f"Processed metrics for {cam_id}: total={total_count}, ltr={ltr_count}, rtl={rtl_count}")
+            
+            # Create the response format that matches the expected frontend format
+            return {
+                "total": total_count,
+                "change": 0,  # We'll calculate this in a future update
+                "hourlyData": hourly_data,
+                "directions": {
+                    "ltr": ltr_count,
+                    "rtl": rtl_count,
+                    "ltrPercentage": ltr_percentage,
+                    "rtlPercentage": rtl_percentage,
+                    "change": 0  # We'll calculate this in a future update
+                }
+            }
+                
+        except Exception as e:
+            self.logger.error(f"Error getting metrics: {e}")
+            return {"error": f"Internal server error: {str(e)}"}
+            
+    def get_metrics_summary(self, time_range, cam_id=None):
+        """
+        Get summary metrics data for the specified time range and camera ID
+        
+        Args:
+            time_range: Time range string (e.g., "24h", "7d")
+            cam_id: Optional camera ID to filter by
+            
+        Returns:
+            dict: Summary metrics data
+        """
+        try:
+            # Convert time_range to hours
+            hours = self._time_range_to_hours(time_range)
+            if hours is None:
+                return {"error": f"Invalid time range: {time_range}"}
+                
+            # Get direction counts from database for this period
+            direction_counts = self.db_manager.get_detection_count_by_direction(
+                days=hours/24, 
+                camera_id=cam_id
+            )
+            
+            # Calculate total detections
+            total_detections = sum(direction_counts.values())
+            
+            # Calculate average per day
+            days = hours / 24
+            avg_per_day = 0
+            if days > 0:
+                avg_per_day = round(total_detections / days, 1)
+            
+            # Get hourly metrics to determine peak hour
+            hourly_metrics = self.db_manager.get_hourly_metrics(hours=hours, camera_id=cam_id)
+            
+            # Find peak hour and count
+            peak_hour = "Not Available"
+            peak_count = 0
+            
+            if hourly_metrics:
+                # Find the hour with the maximum detection count
+                max_hour = None
+                max_count = 0
+                
+                for hour_key, hour_data in hourly_metrics.items():
+                    count = hour_data.get("detection_count", 0)
+                    if count > max_count:
+                        max_count = count
+                        max_hour = hour_key
+                
+                if max_hour:
+                    try:
+                        # Parse the hour and format as "HH:00 - (HH+1):00"
+                        dt = datetime.strptime(max_hour, "%Y-%m-%d %H:00")
+                        hour = int(dt.strftime("%H"))
+                        next_hour = (hour + 1) % 24
+                        peak_hour = f"{hour:02d}:00 - {next_hour:02d}:00"
+                    except Exception as e:
+                        # Fallback to original format if parsing fails
+                        hour_parts = max_hour.split(" ")
+                        if len(hour_parts) > 1:
+                            peak_hour = hour_parts[1]
+                    peak_count = max_count
+            
+            # Create the response in the expected format
+            return {
+                "totalDetections": total_detections,
+                "avgPerDay": avg_per_day,
+                "peakHour": peak_hour,
+                "peakCount": peak_count,
+                "change": 0  # We'll calculate this in a future update
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting metrics summary: {e}")
+            return {"error": f"Internal server error: {str(e)}"} 
