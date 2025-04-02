@@ -1264,15 +1264,27 @@ class APIManager:
             # Log the raw metrics for debugging
             self.logger.info(f"Raw hourly metrics for {cam_id}: {hourly_metrics}")
             
-            # Calculate total counts
-            ltr_count = 0
-            rtl_count = 0
-            total_count = 0
+            # Directly query the database for entry and exit counts to verify
+            entry_count = self.db_manager.query_count("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'entry'", [cam_id])
+            exit_count = self.db_manager.query_count("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'exit'", [cam_id])
+            self.logger.error(f"CRITICAL DEBUG - Direct DB query results for {cam_id}: entry={entry_count}, exit={exit_count}, total={entry_count+exit_count}")
             
-            for hour_data in hourly_metrics.values():
-                ltr_count += hour_data.get("left_to_right", 0)
-                rtl_count += hour_data.get("right_to_left", 0)
+            # Use direct query results for accurate direction counts
+            ltr_count = entry_count  # Map entry events to left-to-right count
+            rtl_count = exit_count   # Map exit events to right-to-left count
+            accurate_total = entry_count + exit_count
+            self.logger.error(f"CRITICAL DEBUG - Setting direction counts: ltr_count={ltr_count}, rtl_count={rtl_count}")
+            
+            # Process hourly metrics for hourly breakdown
+            total_count = 0
+            for hour_key, hour_data in hourly_metrics.items():
+                # We're only using this loop to calculate hourly totals, not direction counts
                 total_count += hour_data.get("detection_count", 0)
+                self.logger.info(f"Hour {hour_key}: detection_count={hour_data.get('detection_count', 0)}, ltr={hour_data.get('left_to_right', 0)}, rtl={hour_data.get('right_to_left', 0)}")
+            
+            # Set total_count to the accurate count from direct DB query
+            self.logger.info(f"Calculated total from hourly metrics: {total_count}, accurate total from direct query: {accurate_total}")
+            total_count = accurate_total
             
             # Calculate percentages
             ltr_percentage = 0
@@ -1310,18 +1322,20 @@ class APIManager:
             self.logger.info(f"Processed metrics for {cam_id}: total={total_count}, ltr={ltr_count}, rtl={rtl_count}")
             
             # Create the response format that matches the expected frontend format
-            return {
-                "total": total_count,
+            response = {
+                "total": accurate_total,  # Use the accurate total directly
                 "change": 0,  # We'll calculate this in a future update
                 "hourlyData": hourly_data,
                 "directions": {
-                    "ltr": ltr_count,
-                    "rtl": rtl_count,
+                    "ltr": entry_count,  # Directly use entry_count
+                    "rtl": exit_count,  # Directly use exit_count 
                     "ltrPercentage": ltr_percentage,
                     "rtlPercentage": rtl_percentage,
                     "change": 0  # We'll calculate this in a future update
                 }
             }
+            self.logger.error(f"FINAL RESPONSE for {cam_id}: {response}")
+            return response
                 
         except Exception as e:
             self.logger.error(f"Error getting metrics: {e}")
@@ -1344,14 +1358,19 @@ class APIManager:
             if hours is None:
                 return {"error": f"Invalid time range: {time_range}"}
                 
-            # Get direction counts from database for this period
-            direction_counts = self.db_manager.get_detection_count_by_direction(
-                days=hours/24, 
-                camera_id=cam_id
+            # Query entry and exit counts directly instead of using direction_counts
+            entry_count = self.db_manager.query_count(
+                "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'entry' AND timestamp >= datetime('now', ?)",
+                [cam_id, f"-{int(hours)} hours"]
+            )
+            exit_count = self.db_manager.query_count(
+                "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'exit' AND timestamp >= datetime('now', ?)",
+                [cam_id, f"-{int(hours)} hours"]
             )
             
-            # Calculate total detections
-            total_detections = sum(direction_counts.values())
+            # Calculate total detections as sum of entry and exit events
+            total_detections = entry_count + exit_count
+            self.logger.info(f"Direct counts for {cam_id}: entry={entry_count}, exit={exit_count}, total={total_detections}")
             
             # Calculate average per day
             days = hours / 24

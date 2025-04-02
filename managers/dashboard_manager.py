@@ -258,14 +258,9 @@ class DashboardManager:
                             last_event["duration"] = duration
                             self.logger.info(f"Person left frame - detection duration: {duration:.2f} seconds")
                 
-                # Log the event to the database if available
-                if hasattr(self.detection_manager, 'db_manager') and self.detection_manager.db_manager:
-                    direction = last_status.get("direction", "unknown")
-                    self.detection_manager.db_manager.log_detection_event(
-                        "detection_end", 
-                        direction=direction
-                    )
-            
+                # We no longer log detection_end events to the database
+                # Keep updating internal metrics but don't log to SQLite
+                
             # Check for person appearance (wasn't detected, now detected)
             # This is handled primarily by DetectionManager calling record_detection,
             # but this is a backup in case that didn't happen

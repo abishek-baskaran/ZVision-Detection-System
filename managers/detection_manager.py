@@ -21,10 +21,26 @@ class DetectionManager:
     DIRECTION_UNKNOWN = 0
     DIRECTION_LEFT_TO_RIGHT = 1
     DIRECTION_RIGHT_TO_LEFT = 2
+    DIRECTION_BOTTOM_TO_TOP = 3
+    DIRECTION_TOP_TO_BOTTOM = 4
+    DIRECTION_DIAGONAL_BL_TR = 5  # bottom-left to top-right
+    DIRECTION_DIAGONAL_BR_TL = 6  # bottom-right to top-left
+    DIRECTION_DIAGONAL_TL_BR = 7  # top-left to bottom-right
+    DIRECTION_DIAGONAL_TR_BL = 8  # top-right to bottom-left
+    DIRECTION_INWARD = 9          # moving toward center (growing)
+    DIRECTION_OUTWARD = 10        # moving away from center (shrinking)
     
     # Entry/Exit direction mapping constants
     ENTRY_DIRECTION_LTR = "LTR"  # Left-to-right is entry
     ENTRY_DIRECTION_RTL = "RTL"  # Right-to-left is entry
+    ENTRY_DIRECTION_BTT = "BTT"  # Bottom-to-top is entry
+    ENTRY_DIRECTION_TTB = "TTB"  # Top-to-bottom is entry
+    ENTRY_DIRECTION_BL_TR = "BLTR"  # Bottom-left to top-right is entry
+    ENTRY_DIRECTION_BR_TL = "BRTL"  # Bottom-right to top-left is entry
+    ENTRY_DIRECTION_TL_BR = "TLBR"  # Top-left to bottom-right is entry
+    ENTRY_DIRECTION_TR_BL = "TRBL"  # Top-right to bottom-left is entry
+    ENTRY_DIRECTION_IN = "IN"     # Moving inward is entry
+    ENTRY_DIRECTION_OUT = "OUT"   # Moving outward is entry
     
     def __init__(self, resource_provider, camera_registry, dashboard_manager=None, db_manager=None):
         """
@@ -57,6 +73,9 @@ class DetectionManager:
         self.detection_threads = {}
         self.states = {}
         self.position_history = {}
+        
+        # Track states for ByteTrack object tracking
+        self.track_states = {}  # camera_id -> {track_id -> track_info}
         
         # ROI and entry/exit direction configurations per camera
         self.roi_settings = {}
@@ -335,19 +354,93 @@ class DetectionManager:
         # Get frame dimensions for proper ROI scaling
         frame_height, frame_width = frame.shape[:2]
         
-        # Run YOLOv8 inference
-        results = self.model(frame, conf=self.confidence_threshold, verbose=False)
+        # Check if ROI is set for this camera
+        roi_frame = frame
+        has_roi = False
+        rx1, ry1, rx2, ry2 = 0, 0, frame_width, frame_height  # Initialize for offset calculation
+        if camera_id in self.roi_settings and "coords" in self.roi_settings[camera_id]:
+            # Get ROI coordinates
+            roi_coords = self.roi_settings[camera_id]["coords"]
+            
+            # Validate that all coordinates exist and are valid
+            if roi_coords and len(roi_coords) == 4 and all(coord is not None for coord in roi_coords):
+                # Convert ROI coordinates to numeric values (handle potential strings)
+                rx1 = float(roi_coords[0])
+                ry1 = float(roi_coords[1])
+                rx2 = float(roi_coords[2])
+                ry2 = float(roi_coords[3])
+                
+                # Default 320x240 canvas size used in frontend
+                canvas_width = 320
+                canvas_height = 240
+                
+                # Scale ROI coordinates from canvas to frame if needed
+                if frame_width > 1.5 * canvas_width:  # Only scale if frame is significantly larger
+                    scale_x = frame_width / canvas_width
+                    scale_y = frame_height / canvas_height
+                    rx1 = rx1 * scale_x
+                    ry1 = ry1 * scale_y
+                    rx2 = rx2 * scale_x
+                    ry2 = ry2 * scale_y
+                
+                # Make sure coordinates are in valid range
+                rx1 = max(0, min(rx1, frame_width))
+                ry1 = max(0, min(ry1, frame_height))
+                rx2 = max(0, min(rx2, frame_width))
+                ry2 = max(0, min(ry2, frame_height))
+                
+                # Convert to integers
+                rx1, ry1, rx2, ry2 = int(rx1), int(ry1), int(rx2), int(ry2)
+                
+                # Crop the frame to the ROI
+                roi_frame = frame[ry1:ry2, rx1:rx2]
+                self.logger.debug(f"Cropped frame for camera {camera_id} from {frame.shape} to {roi_frame.shape}")
+                has_roi = True
+                
+                # If the ROI is empty or invalid, use the original frame
+                if roi_frame.size == 0:
+                    self.logger.warning(f"ROI resulted in empty frame for camera {camera_id}, using original frame")
+                    roi_frame = frame
+                    has_roi = False
+                    rx1, ry1 = 0, 0
+                    rx2, ry2 = frame_width, frame_height
+            else:
+                self.logger.warning(f"Invalid ROI coordinates for camera {camera_id}: {roi_coords}")
+                rx2, ry2 = frame_width, frame_height
         
-        # Check if any person is detected
-        person_found = False
-        bbox_center_x = None
+        # Run YOLOv8 inference with ByteTrack tracking
+        results = self.model.track(roi_frame, conf=self.confidence_threshold, verbose=False, tracker="bytetrack.yaml")
         
+        # Initialize variables for detection state
+        any_person_found = False
+        
+        # Check if camera_id exists in track_states
+        if camera_id not in self.track_states:
+            self.track_states[camera_id] = {}
+        
+        # Current time for tracking
+        current_time = time.time()
+        
+        # Track IDs seen in this frame
+        track_ids_seen = set()
+        
+        # Process each detection result
         for r in results:
+            if not hasattr(r, 'boxes') or not hasattr(r.boxes, 'id'):
+                continue  # Skip if no tracking IDs available
+                
             boxes = r.boxes
-            for box in boxes:
+            for i, box in enumerate(boxes):
                 # Check if detection is a person
                 cls = int(box.cls[0])
                 if cls == self.person_class_id:
+                    # Get tracking ID
+                    if box.id is None:
+                        continue  # Skip if no tracking ID
+                        
+                    track_id = int(box.id[0])
+                    track_ids_seen.add(track_id)
+                    
                     # Get bounding box: x1, y1, x2, y2
                     xyxy = box.xyxy[0].cpu().numpy()
                     
@@ -355,54 +448,327 @@ class DetectionManager:
                     center_x = (xyxy[0] + xyxy[2]) / 2
                     center_y = (xyxy[1] + xyxy[3]) / 2
                     
-                    # Check if person is within ROI if ROI is set for this camera
-                    if camera_id in self.roi_settings and "coords" in self.roi_settings[camera_id]:
-                        # Get ROI coordinates
-                        roi_coords = self.roi_settings[camera_id]["coords"]
-                        
-                        # Convert ROI coordinates to numeric values (handle potential strings)
-                        rx1 = float(roi_coords[0])
-                        ry1 = float(roi_coords[1])
-                        rx2 = float(roi_coords[2])
-                        ry2 = float(roi_coords[3])
-                        
-                        # Add tolerance (2% of frame dimensions) to avoid edge cases
-                        tolerance_x = frame_width * 0.02
-                        tolerance_y = frame_height * 0.02
-                        
-                        # Default 320x240 canvas size used in frontend
-                        canvas_width = 320
-                        canvas_height = 240
-                        
-                        # Scale ROI coordinates from canvas to frame if needed
-                        if frame_width > 1.5 * canvas_width:  # Only scale if frame is significantly larger
-                            scale_x = frame_width / canvas_width
-                            scale_y = frame_height / canvas_height
-                            rx1 = rx1 * scale_x
-                            ry1 = ry1 * scale_y
-                            rx2 = rx2 * scale_x
-                            ry2 = ry2 * scale_y
-                        
-                        # Make sure coordinates are in valid range
-                        rx1 = max(0, min(rx1, frame_width))
-                        ry1 = max(0, min(ry1, frame_height))
-                        rx2 = max(0, min(rx2, frame_width))
-                        ry2 = max(0, min(ry2, frame_height))
-                        
-                        # Skip if person is outside ROI with tolerance
-                        if not ((rx1 - tolerance_x) <= center_x <= (rx2 + tolerance_x) and 
-                                (ry1 - tolerance_y) <= center_y <= (ry2 + tolerance_y)):
-                            continue
+                    # If using ROI, adjust center coordinates to the original frame coordinates
+                    if has_roi:
+                        center_x = center_x + rx1
+                        center_y = center_y + ry1
                     
-                    person_found = True
-                    bbox_center_x = center_x
-                    break
-                
-            if person_found:
-                break
+                    # Person found
+                    any_person_found = True
+                    
+                    # Update track state and check for movement direction
+                    self._update_track_state(camera_id, track_id, center_x, center_y, rx1, ry1, rx2, ry2, frame, current_time)
         
-        # Update detection state for this camera
-        self._update_detection_state(camera_id, person_found, frame, bbox_center_x)
+        # Remove expired tracks (not seen for 2 seconds)
+        expired_tracks = []
+        for track_id, track_info in self.track_states[camera_id].items():
+            if track_id not in track_ids_seen:
+                # Track not seen in this frame
+                if current_time - track_info['last_seen'] > 2.0:
+                    # Track expired
+                    expired_tracks.append(track_id)
+        
+        # Remove expired tracks
+        for track_id in expired_tracks:
+            del self.track_states[camera_id][track_id]
+        
+        # Update overall detection state for this camera
+        self._update_detection_state(camera_id, any_person_found, frame)
+    
+    def _update_track_state(self, camera_id, track_id, center_x, center_y, roi_x1, roi_y1, roi_x2, roi_y2, frame, current_time):
+        """
+        Update the state of a tracked object and check for movement direction
+        
+        Args:
+            camera_id: ID of the camera
+            track_id: ID of the tracked object
+            center_x: X-coordinate of the object's center
+            center_y: Y-coordinate of the object's center
+            roi_x1, roi_y1, roi_x2, roi_y2: ROI coordinates in original frame
+            frame: Current video frame
+            current_time: Current timestamp
+        """
+        # Check if point is in ROI - no longer returning early to allow for boundary crossing detection
+        in_roi = (roi_x1 <= center_x <= roi_x2) and (roi_y1 <= center_y <= roi_y2)
+        
+        # Get track info if it exists
+        if track_id not in self.track_states[camera_id]:
+            # New track
+            self.track_states[camera_id][track_id] = {
+                'positions': deque(maxlen=10),  # Store last 10 positions for direction calculation
+                'last_seen': current_time,
+                'direction_computed': False,    # Whether we've computed a direction yet
+                'movement_direction': None,     # 'entry', 'exit', or None
+                'first_seen': current_time,
+                'snapshot_path': None,          # Store a single snapshot path instead of a list
+                'in_roi': in_roi,              # Track whether object is in ROI
+                'roi_status_changed': False,    # Track if ROI status changed
+                'direction_logged': False       # Track if direction event already logged
+            }
+            
+            # Add first position
+            self.track_states[camera_id][track_id]['positions'].append((center_x, center_y))
+            
+            # Take initial snapshot - only one per track_id
+            snapshot_path = self._save_snapshot(camera_id, frame)
+            self.track_states[camera_id][track_id]['snapshot_path'] = snapshot_path
+            
+            # Don't log detection_start event to database anymore
+            # Only emit event via API manager for notification purposes
+            if self.api_manager:
+                self.api_manager.emit_event(
+                    "detection_start",
+                    {"camera": camera_id, "track_id": track_id}
+                )
+            
+            self.logger.info(f"New track {track_id} detected on camera {camera_id}")
+        else:
+            # Existing track - update position history
+            track_info = self.track_states[camera_id][track_id]
+            prev_in_roi = track_info['in_roi']
+            
+            # Check for ROI boundary crossing
+            if in_roi != prev_in_roi:
+                # ROI boundary crossing detected
+                if in_roi:
+                    # Entering ROI - log entry event but only if not already logged by direction
+                    if not track_info.get('direction_logged', False) or track_info.get('movement_direction') != 'entry':
+                        self._log_direction_event(camera_id, track_id, "entry", frame)
+                        self.logger.info(f"Track {track_id} entered ROI on camera {camera_id}")
+                        track_info['direction_logged'] = True
+                        track_info['movement_direction'] = 'entry'
+                else:
+                    # Exiting ROI - log exit event but only if not already logged by direction
+                    if not track_info.get('direction_logged', False) or track_info.get('movement_direction') != 'exit':
+                        self._log_direction_event(camera_id, track_id, "exit", frame)
+                        self.logger.info(f"Track {track_id} exited ROI on camera {camera_id}")
+                        track_info['direction_logged'] = True
+                        track_info['movement_direction'] = 'exit'
+                
+                track_info['roi_status_changed'] = True
+            
+            # Update position history
+            track_info['positions'].append((center_x, center_y))
+            
+            # Calculate movement direction if we have enough positions and haven't logged a direction yet
+            # or if we've crossed an ROI boundary and want to recalculate
+            direction_check_needed = ((len(track_info['positions']) >= 3 and not track_info.get('direction_logged', False))
+                                     or track_info['roi_status_changed'])
+            
+            if direction_check_needed:
+                movement_vector = self._calculate_movement_vector(track_info['positions'])
+                if movement_vector:
+                    direction = self._determine_direction(camera_id, movement_vector)
+                    if direction and not track_info.get('direction_logged', False):
+                        # Log direction event - this is the key change, removing comment
+                        self._log_direction_event(camera_id, track_id, direction, frame)
+                        
+                        track_info['direction_computed'] = True
+                        track_info['movement_direction'] = direction
+                        track_info['direction_logged'] = True
+                        self.logger.info(f"Track {track_id} movement direction {direction} on camera {camera_id}")
+                        track_info['roi_status_changed'] = False
+            
+            # Remove logging of detection_continuing events
+            # We'll still update the track's last_seen time
+            
+            # Update track info
+            track_info.update({
+                'last_seen': current_time,
+                'last_position': (center_x, center_y),
+                'in_roi': in_roi
+            })
+    
+    def _calculate_movement_vector(self, positions):
+        """
+        Calculate the movement vector from a list of positions
+        
+        Args:
+            positions: List of (x, y) positions
+            
+        Returns:
+            tuple: Normalized movement vector (x, y) or None if can't be determined
+        """
+        if len(positions) < 3:  # Reduced from 5 to 3 for faster direction detection
+            return None
+        
+        # Use first 30% and last 30% of positions for more robust direction detection
+        first_third = max(1, len(positions) // 3)
+        start_points = list(positions)[:first_third]
+        end_points = list(positions)[-first_third:]
+        
+        # Calculate average positions
+        start_x_avg = sum(p[0] for p in start_points) / len(start_points)
+        start_y_avg = sum(p[1] for p in start_points) / len(start_points)
+        end_x_avg = sum(p[0] for p in end_points) / len(end_points)
+        end_y_avg = sum(p[1] for p in end_points) / len(end_points)
+        
+        # Calculate movement vector
+        movement_x = end_x_avg - start_x_avg
+        movement_y = end_y_avg - start_y_avg
+        
+        # Calculate magnitude of movement
+        magnitude = (movement_x**2 + movement_y**2)**0.5
+        
+        # Check if movement is significant (reduced from 5.0 to 2.0 pixels)
+        if magnitude < 2.0:  # Reduced threshold for more sensitive direction detection
+            return None
+        
+        # Normalize the vector
+        if magnitude > 1e-6:  # Avoid division by zero
+            movement_x /= magnitude
+            movement_y /= magnitude
+        
+        return (movement_x, movement_y)
+    
+    def _determine_direction(self, camera_id, movement_vector):
+        """
+        Determine if movement is entry or exit based on camera direction vector
+        
+        Args:
+            camera_id: ID of the camera
+            movement_vector: Normalized movement vector (x, y)
+            
+        Returns:
+            str: 'entry', 'exit', or None if direction can't be determined
+        """
+        if movement_vector is None or camera_id not in self.roi_settings:
+            return None
+        
+        # Get camera direction vector
+        direction = self.roi_settings[camera_id].get("entry_direction", "1,0")
+        
+        # Parse direction vector
+        try:
+            if ',' in direction:
+                # New vector format "x,y"
+                dir_x, dir_y = map(float, direction.split(','))
+            else:
+                # Legacy format (LTR, RTL, etc.)
+                if direction == "LTR":
+                    dir_x, dir_y = 1, 0
+                elif direction == "RTL":
+                    dir_x, dir_y = -1, 0
+                elif direction == "BTT":
+                    dir_x, dir_y = 0, -1
+                elif direction == "TTB":
+                    dir_x, dir_y = 0, 1
+                elif direction == "BLTR":
+                    dir_x, dir_y = 1, -1
+                elif direction == "BRTL":
+                    dir_x, dir_y = -1, -1
+                elif direction == "TLBR":
+                    dir_x, dir_y = 1, 1
+                elif direction == "TRBL":
+                    dir_x, dir_y = -1, 1
+                else:
+                    dir_x, dir_y = 1, 0  # Default to right
+            
+            # Normalize direction vector
+            magnitude = (dir_x**2 + dir_y**2)**0.5
+            if magnitude > 1e-6:
+                dir_x /= magnitude
+                dir_y /= magnitude
+            
+            self.logger.debug(f"Camera {camera_id} direction vector: ({dir_x}, {dir_y})")
+            self.logger.debug(f"Movement vector: ({movement_vector[0]}, {movement_vector[1]})")
+            
+            # Calculate dot product
+            dot_product = movement_vector[0] * dir_x + movement_vector[1] * dir_y
+            
+            self.logger.debug(f"Dot product: {dot_product}")
+            
+            # Apply threshold - reduced from 0.3 to 0.2 for more sensitive detection
+            threshold = 0.2  # Reduced dot product threshold
+            if dot_product > threshold:
+                return "entry"
+            elif dot_product < -threshold:
+                return "exit"
+            else:
+                return None  # Movement perpendicular to direction
+        except Exception as e:
+            self.logger.error(f"Error determining direction: {e}")
+            return None
+    
+    def _log_direction_event(self, camera_id, track_id, event_type, frame):
+        """
+        Log a direction event (entry or exit)
+        
+        Args:
+            camera_id: ID of the camera
+            track_id: ID of the tracked object
+            event_type: 'entry' or 'exit'
+            frame: Current video frame
+        """
+        self.logger.info(f"Direction detected: {event_type} for track {track_id} on camera {camera_id}")
+        
+        # Use existing snapshot instead of creating a new one
+        snapshot_path = self.track_states[camera_id][track_id]['snapshot_path']
+        
+        # Log direction in dashboard
+        if self.dashboard_manager:
+            # Record footfall
+            self.dashboard_manager.record_footfall(event_type, camera_id=camera_id)
+        
+        # Log entry/exit events in database (keep this part)
+        if self.db_manager and (event_type == 'entry' or event_type == 'exit'):
+            self.db_manager.log_detection_event(
+                event_type,
+                camera_id=camera_id,
+                snapshot_path=snapshot_path,
+                details=f"track_id:{track_id}"
+            )
+        
+        # Emit event via API manager
+        if self.api_manager:
+            self.api_manager.emit_event(
+                event_type,
+                {
+                    "camera": camera_id,
+                    "event": event_type,
+                    "track_id": track_id
+                }
+            )
+    
+    def _update_detection_state(self, camera_id, person_present, frame):
+        """
+        Update overall detection state for a specific camera
+        
+        Args:
+            camera_id: ID of the camera
+            person_present: Whether a person is present in the frame
+            frame: The current frame
+        """
+        if camera_id not in self.states:
+            self.states[camera_id] = {
+                "person_detected": False,
+                "last_detection_time": None,
+                "current_direction": self.DIRECTION_UNKNOWN,
+                "no_person_counter": 0,
+                "last_snapshot_time": 0,  # Track last snapshot time
+                "snapshot_interval": 1.0  # Take snapshot every 1 second
+            }
+        
+        state = self.states[camera_id]
+        current_time = time.time()
+        
+        # Update overall state based on person presence
+        if person_present:
+            # Update person detected state
+            if not state["person_detected"]:
+                state["person_detected"] = True
+                state["last_detection_time"] = current_time
+                state["no_person_counter"] = 0
+        else:
+            # No person detected in this frame
+            if state["person_detected"]:
+                # Increment the counter for consecutive frames without a person
+                state["no_person_counter"] += 1
+                
+                # If no person for several consecutive frames, consider all people gone
+                if state["no_person_counter"] >= 5:
+                    state["person_detected"] = False
+                    self.logger.info(f"No more persons detected on camera {camera_id}")
     
     def _save_snapshot(self, camera_id, frame):
         """
@@ -434,274 +800,6 @@ class DetectionManager:
         cv2.imwrite(filename, frame)
         
         return filename
-    
-    def _update_detection_state(self, camera_id, person_present, frame, center_x):
-        """
-        Update detection state for a specific camera
-        
-        Args:
-            camera_id: ID of the camera
-            person_present: Whether a person is present in the frame
-            frame: The current frame
-            center_x: X-coordinate of the person's bounding box center (or None)
-        """
-        if camera_id not in self.states:
-            self.states[camera_id] = {
-                "person_detected": False,
-                "last_detection_time": None,
-                "current_direction": self.DIRECTION_UNKNOWN,
-                "no_person_counter": 0,
-                "last_snapshot_time": 0,  # Track last snapshot time
-                "snapshot_interval": 1.0  # Take snapshot every 1 second
-            }
-        
-        state = self.states[camera_id]
-        current_time = time.time()
-        
-        if person_present:
-            # Check if this is a new detection or continuous detection
-            if not state["person_detected"]:
-                # Person has just appeared
-                state["person_detected"] = True
-                state["last_detection_time"] = current_time
-                state["current_direction"] = self.DIRECTION_UNKNOWN
-                state["no_person_counter"] = 0
-                state["last_snapshot_time"] = current_time
-                
-                # Save initial detection snapshot
-                snapshot_path = self._save_snapshot(camera_id, frame)
-                
-                # Record the detection in dashboard
-                if self.dashboard_manager:
-                    self.dashboard_manager.record_detection(camera_id=camera_id)
-                
-                # Log detection event in database
-                if self.db_manager:
-                    self.db_manager.log_detection_event(
-                        "detection_start", 
-                        camera_id=camera_id,
-                        snapshot_path=snapshot_path
-                    )
-                
-                # Emit event via API manager
-                if self.api_manager:
-                    self.api_manager.emit_event(
-                        "detection_start", 
-                        {"camera": camera_id}
-                    )
-                
-                self.logger.info(f"Person detected on camera {camera_id}")
-            else:
-                # Continuous detection - capture snapshot every interval
-                time_since_last_snapshot = current_time - state["last_snapshot_time"]
-                
-                if time_since_last_snapshot >= state["snapshot_interval"]:
-                    # Time to take another snapshot
-                    snapshot_path = self._save_snapshot(camera_id, frame)
-                    state["last_snapshot_time"] = current_time
-                    
-                    # Optionally log continuing detection
-                    if self.db_manager:
-                        self.db_manager.log_detection_event(
-                            "detection_continuing", 
-                            camera_id=camera_id,
-                            snapshot_path=snapshot_path
-                        )
-            
-            # Track position for direction detection
-            if center_x is not None:
-                self._record_position(camera_id, center_x)
-        else:
-            # No person detected in this frame
-            if state["person_detected"]:
-                # Increment the counter for consecutive frames without a person
-                state["no_person_counter"] += 1
-                
-                # If no person for several consecutive frames, consider the person gone
-                if state["no_person_counter"] >= 5:
-                    # Person has disappeared
-                    state["person_detected"] = False
-                    
-                    # Save snapshot when person is no longer detected
-                    snapshot_path = self._save_snapshot(camera_id, frame)
-                    
-                    # Get direction string
-                    direction_str = self._get_direction_string(camera_id)
-                    
-                    # Determine if this was an entry or exit based on direction and configuration
-                    event_type = "detection_end"
-                    if camera_id in self.roi_settings and "entry_direction" in self.roi_settings[camera_id]:
-                        entry_dir = self.roi_settings[camera_id]["entry_direction"]
-                        if direction_str == "left_to_right":
-                            event_type = "entry" if entry_dir == "LTR" else "exit"
-                        elif direction_str == "right_to_left":
-                            event_type = "entry" if entry_dir == "RTL" else "exit"
-                    
-                    # Log direction in dashboard
-                    if self.dashboard_manager:
-                        if direction_str != "unknown":
-                            self.dashboard_manager.record_direction(direction_str, camera_id=camera_id)
-                        
-                        # Log footfall
-                        self.dashboard_manager.record_footfall(event_type, camera_id=camera_id)
-                    
-                    # Log detection end event in database
-                    if self.db_manager:
-                        self.db_manager.log_detection_event(
-                            event_type, 
-                            direction=direction_str,
-                            camera_id=camera_id,
-                            snapshot_path=snapshot_path
-                        )
-                    
-                    # Emit event via API manager
-                    if self.api_manager:
-                        self.api_manager.emit_event(
-                            event_type, 
-                            {
-                                "camera": camera_id,
-                                "event": event_type,
-                                "direction": direction_str
-                            }
-                        )
-                    
-                    self.logger.info(f"Person no longer detected on camera {camera_id}, direction: {direction_str}, event: {event_type}")
-    
-    def _record_position(self, camera_id, center_x):
-        """
-        Record the position of a person for direction tracking
-        
-        Args:
-            camera_id: ID of the camera
-            center_x: X-coordinate of the person's bounding box center
-        """
-        # Ensure we have a position history for this camera
-        if camera_id not in self.position_history:
-            self.position_history[camera_id] = deque(maxlen=20)
-        
-        # Add current position to history
-        self.position_history[camera_id].append((time.time(), center_x))
-        
-        # Update direction if we have enough positions
-        if len(self.position_history[camera_id]) >= 3:
-            self._update_direction(camera_id)
-    
-    def _update_direction(self, camera_id):
-        """
-        Update the movement direction based on position history
-        
-        Args:
-            camera_id: ID of the camera
-        """
-        if camera_id not in self.states or camera_id not in self.position_history:
-            return
-        
-        # Get the oldest and newest positions
-        if len(self.position_history[camera_id]) < 3:
-            return
-        
-        # Use the oldest and newest positions for more stable direction detection
-        oldest_time, oldest_x = self.position_history[camera_id][0]
-        newest_time, newest_x = self.position_history[camera_id][-1]
-        
-        # Calculate time difference to ensure valid movement
-        time_diff = newest_time - oldest_time
-        if time_diff <= 0.1:  # Require at least 0.1 seconds between samples
-            return
-        
-        # Calculate movement
-        movement = newest_x - oldest_x
-        
-        # Get ROI width for this camera to calculate adaptive threshold
-        roi_width = self._get_roi_width(camera_id)
-        # Use configurable ratio of ROI width or fall back to configured threshold
-        adaptive_threshold = roi_width * self.direction_threshold_ratio if roi_width else self.direction_threshold
-        # Ensure a minimum threshold
-        adaptive_threshold = max(adaptive_threshold, 5)
-        
-        # Only update direction if movement exceeds threshold
-        if abs(movement) >= adaptive_threshold:
-            prev_direction = self.states[camera_id]["current_direction"]
-            
-            # Determine new direction
-            new_direction = (
-                self.DIRECTION_LEFT_TO_RIGHT if movement > 0 
-                else self.DIRECTION_RIGHT_TO_LEFT
-            )
-            
-            # Update state if direction changed
-            if prev_direction != new_direction:
-                self.states[camera_id]["current_direction"] = new_direction
-                
-                # Log direction change
-                direction_str = self._direction_to_string(new_direction)
-                self.logger.info(f"Direction updated for camera {camera_id}: {direction_str}")
-                
-                # Emit direction event via API manager
-                if self.api_manager:
-                    self.api_manager.emit_event(
-                        "direction", 
-                        {
-                            "camera": camera_id,
-                            "direction": direction_str
-                        }
-                    )
-    
-    def _get_roi_width(self, camera_id):
-        """
-        Get the ROI width for a specific camera
-        
-        Args:
-            camera_id: ID of the camera
-            
-        Returns:
-            int: ROI width in pixels or None if not set
-        """
-        if camera_id in self.roi_settings and "coords" in self.roi_settings[camera_id]:
-            coords = self.roi_settings[camera_id]["coords"]
-            # ROI coordinates format: [x1, y1, x2, y2]
-            if coords and len(coords) == 4:
-                return coords[2] - coords[0]  # x2 - x1
-        
-        # Get camera frame width as fallback
-        if self.camera_registry:
-            camera = self.camera_registry.get_camera(camera_id)
-            if camera and hasattr(camera, 'frame_width'):
-                return camera.frame_width
-        
-        # Default to 640 if nothing else available (typical camera width)
-        return 640
-    
-    def _direction_to_string(self, direction):
-        """
-        Convert direction constant to string
-        
-        Args:
-            direction: Direction constant
-            
-        Returns:
-            str: Direction string
-        """
-        if direction == self.DIRECTION_LEFT_TO_RIGHT:
-            return "left_to_right"
-        elif direction == self.DIRECTION_RIGHT_TO_LEFT:
-            return "right_to_left"
-        else:
-            return "unknown"
-    
-    def _get_direction_string(self, camera_id):
-        """
-        Get the current direction string for a camera
-        
-        Args:
-            camera_id: ID of the camera
-            
-        Returns:
-            str: Direction string
-        """
-        if camera_id in self.states:
-            return self._direction_to_string(self.states[camera_id]["current_direction"])
-        return "unknown"
     
     def _check_system_resources(self):
         """
@@ -941,7 +1039,8 @@ class DetectionManager:
         
         Args:
             camera_id: ID of the camera
-            entry_direction: Entry direction (LTR or RTL)
+            entry_direction: Entry direction (LTR, RTL, BTT, TTB, BLTR, BRTL, TLBR, TRBL, IN, OUT) 
+                             or vector format "x,y"
             
         Returns:
             bool: True if set successfully, False otherwise
@@ -953,9 +1052,33 @@ class DetectionManager:
                 return False
                 
             # Validate entry direction
-            if entry_direction not in (self.ENTRY_DIRECTION_LTR, self.ENTRY_DIRECTION_RTL):
+            valid_directions = (
+                self.ENTRY_DIRECTION_LTR, self.ENTRY_DIRECTION_RTL, 
+                self.ENTRY_DIRECTION_BTT, self.ENTRY_DIRECTION_TTB,
+                self.ENTRY_DIRECTION_BL_TR, self.ENTRY_DIRECTION_BR_TL,
+                self.ENTRY_DIRECTION_TL_BR, self.ENTRY_DIRECTION_TR_BL,
+                self.ENTRY_DIRECTION_IN, self.ENTRY_DIRECTION_OUT
+            )
+            
+            # Check if it's a vector format "x,y"
+            is_vector_format = ',' in entry_direction
+            
+            if not is_vector_format and entry_direction not in valid_directions:
                 self.logger.error(f"Invalid entry direction: {entry_direction}")
                 return False
+            
+            # If it's vector format, validate it
+            if is_vector_format:
+                try:
+                    x, y = map(float, entry_direction.split(','))
+                    # Normalize the vector
+                    magnitude = (x**2 + y**2)**0.5
+                    if magnitude < 1e-6:
+                        self.logger.error(f"Invalid direction vector (too small): {entry_direction}")
+                        return False
+                except Exception as e:
+                    self.logger.error(f"Invalid direction vector format: {entry_direction} - {e}")
+                    return False
                 
             # Get existing ROI if available
             roi_coords = None
@@ -1036,4 +1159,37 @@ class DetectionManager:
             
         except Exception as e:
             self.logger.error(f"Error clearing ROI for camera {camera_id}: {e}")
-            return False 
+            return False
+    
+    def _direction_to_string(self, direction):
+        """
+        Convert direction constant to string
+        
+        Args:
+            direction: Direction constant
+            
+        Returns:
+            str: Direction string
+        """
+        if direction == self.DIRECTION_LEFT_TO_RIGHT:
+            return "left_to_right"
+        elif direction == self.DIRECTION_RIGHT_TO_LEFT:
+            return "right_to_left"
+        elif direction == self.DIRECTION_BOTTOM_TO_TOP:
+            return "bottom_to_top"
+        elif direction == self.DIRECTION_TOP_TO_BOTTOM:
+            return "top_to_bottom"
+        elif direction == self.DIRECTION_DIAGONAL_BL_TR:
+            return "bottom_left_to_top_right"
+        elif direction == self.DIRECTION_DIAGONAL_BR_TL:
+            return "bottom_right_to_top_left"
+        elif direction == self.DIRECTION_DIAGONAL_TL_BR:
+            return "top_left_to_bottom_right"
+        elif direction == self.DIRECTION_DIAGONAL_TR_BL:
+            return "top_right_to_bottom_left"
+        elif direction == self.DIRECTION_INWARD:
+            return "inward"
+        elif direction == self.DIRECTION_OUTWARD:
+            return "outward"
+        else:
+            return "unknown" 

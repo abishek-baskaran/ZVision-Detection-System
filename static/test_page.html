@@ -192,6 +192,101 @@
             background-color: #f9f9f9;
         }
         
+        /* Direction Selector Styles */
+        .direction-selector-container {
+            margin-bottom: 15px;
+        }
+        
+        .direction-selector {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 15px auto;
+            border-radius: 50%;
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+        }
+        
+        .direction-arrow {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .direction-arrow:hover {
+            background-color: #aaa;
+            transform: scale(1.1);
+        }
+        
+        .direction-arrow.selected {
+            background-color: #4CAF50;
+            color: white;
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+        }
+        
+        /* Position arrows in their directions */
+        .direction-arrow.n {
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        .direction-arrow.ne {
+            top: 15%;
+            right: 15%;
+        }
+        
+        .direction-arrow.e {
+            top: 50%;
+            right: 0;
+            transform: translateY(-50%);
+        }
+        
+        .direction-arrow.se {
+            bottom: 15%;
+            right: 15%;
+        }
+        
+        .direction-arrow.s {
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        .direction-arrow.sw {
+            bottom: 15%;
+            left: 15%;
+        }
+        
+        .direction-arrow.w {
+            top: 50%;
+            left: 0;
+            transform: translateY(-50%);
+        }
+        
+        .direction-arrow.nw {
+            top: 15%;
+            left: 15%;
+        }
+        
+        .direction-info {
+            text-align: center;
+            margin-top: 10px;
+        }
+        
+        .small-text {
+            font-size: 12px;
+            color: #666;
+        }
+        
         /* Responsive design */
         @media (max-width: 600px) {
             .container {
@@ -256,8 +351,23 @@
             <div class="roi-group">
                 <h4>Main Camera ROI Configuration</h4>
                 <div id="roi-controls-main" class="roi-controls">
-                    <label><input type="radio" name="entryDirMain" value="LTR" checked> Left-to-Right = Entry</label><br>
-                    <label><input type="radio" name="entryDirMain" value="RTL"> Right-to-Left = Entry</label>
+                    <div class="direction-selector-container">
+                        <p>Select Entry Direction Vector:</p>
+                        <div class="direction-selector" id="direction-selector-main">
+                            <div class="direction-arrow n" data-vector="0,-1" title="Bottom to Top (0,-1)">↑</div>
+                            <div class="direction-arrow ne" data-vector="0.7,-0.7" title="Bottom-Left to Top-Right (0.7,-0.7)">↗</div>
+                            <div class="direction-arrow e" data-vector="1,0" title="Left to Right (1,0)">→</div>
+                            <div class="direction-arrow se" data-vector="0.7,0.7" title="Top-Left to Bottom-Right (0.7,0.7)">↘</div>
+                            <div class="direction-arrow s" data-vector="0,1" title="Top to Bottom (0,1)">↓</div>
+                            <div class="direction-arrow sw" data-vector="-0.7,0.7" title="Top-Right to Bottom-Left (-0.7,0.7)">↙</div>
+                            <div class="direction-arrow w" data-vector="-1,0" title="Right to Left (-1,0)">←</div>
+                            <div class="direction-arrow nw" data-vector="-0.7,-0.7" title="Bottom-Right to Top-Left (-0.7,-0.7)">↖</div>
+                        </div>
+                        <div class="direction-info">
+                            <p>Selected vector: <span id="selected-vector-main">1,0</span></p>
+                            <p class="small-text">(Default: Left to Right)</p>
+                        </div>
+                    </div>
                     <div class="buttons">
                         <button id="save-roi-main">Save ROI</button>
                         <button id="reset-roi-main">Reset ROI</button>
@@ -269,8 +379,23 @@
             <div class="roi-group">
                 <h4>Secondary Camera ROI Configuration</h4>
                 <div id="roi-controls-secondary" class="roi-controls">
-                    <label><input type="radio" name="entryDirSecondary" value="LTR" checked> Left-to-Right = Entry</label><br>
-                    <label><input type="radio" name="entryDirSecondary" value="RTL"> Right-to-Left = Entry</label>
+                    <div class="direction-selector-container">
+                        <p>Select Entry Direction Vector:</p>
+                        <div class="direction-selector" id="direction-selector-secondary">
+                            <div class="direction-arrow n" data-vector="0,-1" title="Bottom to Top (0,-1)">↑</div>
+                            <div class="direction-arrow ne" data-vector="0.7,-0.7" title="Bottom-Left to Top-Right (0.7,-0.7)">↗</div>
+                            <div class="direction-arrow e" data-vector="1,0" title="Left to Right (1,0)">→</div>
+                            <div class="direction-arrow se" data-vector="0.7,0.7" title="Top-Left to Bottom-Right (0.7,0.7)">↘</div>
+                            <div class="direction-arrow s" data-vector="0,1" title="Top to Bottom (0,1)">↓</div>
+                            <div class="direction-arrow sw" data-vector="-0.7,0.7" title="Top-Right to Bottom-Left (-0.7,0.7)">↙</div>
+                            <div class="direction-arrow w" data-vector="-1,0" title="Right to Left (-1,0)">←</div>
+                            <div class="direction-arrow nw" data-vector="-0.7,-0.7" title="Bottom-Right to Top-Left (-0.7,-0.7)">↖</div>
+                        </div>
+                        <div class="direction-info">
+                            <p>Selected vector: <span id="selected-vector-secondary">0,-1</span></p>
+                            <p class="small-text">(Default: Bottom to Top)</p>
+                        </div>
+                    </div>
                     <div class="buttons">
                         <button id="save-roi-secondary">Save ROI</button>
                         <button id="reset-roi-secondary">Reset ROI</button>
@@ -314,6 +439,7 @@
             let roiCanvases = {};
             let drawingState = {};
             let selectedROIs = {};
+            let selectedVectors = {};
             
             // Initialize ROI canvas for a specific camera
             function initROICanvas(cameraId) {
@@ -333,6 +459,15 @@
                     startX: 0,
                     startY: 0
                 };
+                
+                // Initialize direction vector
+                if (!selectedVectors) {
+                    selectedVectors = {};
+                }
+                selectedVectors[cameraId] = cameraId === 'main' ? '1,0' : '0,-1'; // Default: main=LTR, secondary=BTT
+                
+                // Setup direction selector
+                setupDirectionSelector(cameraId);
                 
                 // Resize canvas to match video feed
                 function resizeCanvas() {
@@ -412,17 +547,9 @@
                         return;
                     }
                     
-                    // Use the correct input name based on camera ID
-                    let entrySelectorName;
-                    if (cameraId === 'main') {
-                        entrySelectorName = 'entryDirMain';
-                    } else if (cameraId === 'secondary') {
-                        entrySelectorName = 'entryDirSecondary';
-                    } else {
-                        entrySelectorName = `entryDir${cameraId}`;
-                    }
+                    // Get the selected direction vector
+                    const entryDir = selectedVectors[cameraId] || '1,0';
                     
-                    const entryDir = document.querySelector(`input[name="${entrySelectorName}"]:checked`).value;
                     const roiData = {
                         x1: selectedROIs[cameraId].x1,
                         y1: selectedROIs[cameraId].y1,
@@ -468,6 +595,41 @@
                 };
             }
             
+            // Helper function to set up the direction selector
+            function setupDirectionSelector(cameraId) {
+                const directionSelector = document.getElementById(`direction-selector-${cameraId}`);
+                const vectorDisplay = document.getElementById(`selected-vector-${cameraId}`);
+                
+                // Set initial selected direction
+                const defaultVector = cameraId === 'main' ? '1,0' : '0,-1';
+                const defaultArrowClass = cameraId === 'main' ? 'e' : 'n';
+                
+                const arrows = directionSelector.querySelectorAll('.direction-arrow');
+                
+                // Select the default arrow
+                arrows.forEach(arrow => {
+                    if (arrow.classList.contains(defaultArrowClass)) {
+                        arrow.classList.add('selected');
+                    }
+                    
+                    // Add click event to each arrow
+                    arrow.addEventListener('click', function() {
+                        // Remove selected class from all arrows
+                        arrows.forEach(a => a.classList.remove('selected'));
+                        
+                        // Add selected class to clicked arrow
+                        this.classList.add('selected');
+                        
+                        // Get and store the vector value
+                        const vector = this.getAttribute('data-vector');
+                        selectedVectors[cameraId] = vector;
+                        
+                        // Update the display
+                        vectorDisplay.textContent = vector;
+                    });
+                });
+            }
+            
             // Helper function to draw ROI on the canvas
             function drawROI(cameraId, roi) {
                 const ctx = roiCanvases[cameraId].ctx;
@@ -503,26 +665,23 @@
                         drawROI(cameraId, selectedROIs[cameraId]);
                         console.log(`Loaded ROI for Camera ${cameraId}:`, selectedROIs[cameraId]);
                         
-                        // Set the entry direction radio button - use a different selector for each camera ID
-                        const entryDir = data.entry_direction || "LTR";
-                        let radioSelector;
+                        // Set the entry direction - check if it's a vector format
+                        const entryDir = data.entry_direction || (cameraId === 'main' ? '1,0' : '0,-1');
                         
-                        // Create the appropriate selector based on the camera ID
-                        if (cameraId === 'main') {
-                            radioSelector = `input[name="entryDirMain"][value="${entryDir}"]`;
-                        } else if (cameraId === 'secondary') {
-                            radioSelector = `input[name="entryDirSecondary"][value="${entryDir}"]`;
-                        } else {
-                            // Fallback selector format for other camera IDs
-                            radioSelector = `input[name="entryDir${cameraId}"][value="${entryDir}"]`;
+                        // Update the selected vector
+                        if (!selectedVectors) {
+                            selectedVectors = {};
+                        }
+                        selectedVectors[cameraId] = entryDir;
+                        
+                        // Update the display
+                        const vectorDisplay = document.getElementById(`selected-vector-${cameraId}`);
+                        if (vectorDisplay) {
+                            vectorDisplay.textContent = entryDir;
                         }
                         
-                        const radioBtn = document.querySelector(radioSelector);
-                        if (radioBtn) {
-                            radioBtn.checked = true;
-                        } else {
-                            console.warn(`Could not find radio button for ${cameraId} with direction ${entryDir}`);
-                        }
+                        // Update the selected arrow
+                        updateSelectedArrow(cameraId, entryDir);
                     } else {
                         console.log(`No ROI configuration found for Camera ${cameraId}`);
                     }
@@ -530,6 +689,40 @@
                 .catch(error => {
                     console.error(`Error loading ROI configuration for Camera ${cameraId}:`, error);
                 });
+            }
+            
+            // Helper function to update the selected arrow based on vector
+            function updateSelectedArrow(cameraId, vector) {
+                const directionSelector = document.getElementById(`direction-selector-${cameraId}`);
+                const arrows = directionSelector.querySelectorAll('.direction-arrow');
+                
+                // Remove selected class from all arrows
+                arrows.forEach(arrow => arrow.classList.remove('selected'));
+                
+                // Find the closest matching arrow
+                let bestMatch = null;
+                let bestDistance = Infinity;
+                
+                // Parse the vector
+                let [vx, vy] = vector.split(',').map(v => parseFloat(v));
+                
+                arrows.forEach(arrow => {
+                    const arrowVector = arrow.getAttribute('data-vector');
+                    const [ax, ay] = arrowVector.split(',').map(v => parseFloat(v));
+                    
+                    // Calculate distance between vectors
+                    const distance = Math.sqrt(Math.pow(vx - ax, 2) + Math.pow(vy - ay, 2));
+                    
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        bestMatch = arrow;
+                    }
+                });
+                
+                // Select the best matching arrow
+                if (bestMatch) {
+                    bestMatch.classList.add('selected');
+                }
             }
             
             // Update system status

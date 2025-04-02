@@ -198,6 +198,11 @@ class DatabaseManager:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Only log entry and exit events, skip all other events
+        if event_type not in ['entry', 'exit']:
+            self.logger.debug(f"Skipping non-entry/exit event: {event_type}")
+            return True
+            
         with self.db_lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -928,18 +933,19 @@ class DatabaseManager:
                 
                 # Format the query based on whether camera_id is provided
                 if camera_id is not None and camera_id != "":
-                    # With camera ID filter
+                    # With camera ID filter - now including event_type in the selection
                     query = """
                     SELECT 
                         strftime('%Y-%m-%d %H:00', timestamp) as hour,
                         direction,
+                        event_type,
                         COUNT(*) as count,
                         camera_id
                     FROM detection_events 
                     WHERE strftime('%Y-%m-%d %H:00', timestamp) >= ? 
-                    AND event_type = 'detection_end'
+                    AND event_type IN ('entry', 'exit')
                     AND camera_id = ?
-                    GROUP BY hour, direction
+                    GROUP BY hour, direction, event_type
                     ORDER BY hour
                     """
                     # Log the query and parameters
@@ -947,28 +953,36 @@ class DatabaseManager:
                     self.logger.info(f"Parameters: hour_threshold={hour_threshold}, camera_id={camera_id}")
                     
                     # Check if there are any records for this camera
-                    verification_query = "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'detection_end'"
+                    verification_query = "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type IN ('entry', 'exit')"
                     cursor.execute(verification_query, (camera_id,))
                     count = cursor.fetchone()[0]
-                    self.logger.info(f"Total records for camera {camera_id} with event_type 'detection_end': {count}")
+                    self.logger.info(f"Total records for camera {camera_id} with event_type 'entry' or 'exit': {count}")
+                    
+                    # Also check entry and exit events separately for debugging
+                    cursor.execute("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'entry'", (camera_id,))
+                    entry_count = cursor.fetchone()[0]
+                    cursor.execute("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'exit'", (camera_id,))
+                    exit_count = cursor.fetchone()[0]
+                    self.logger.info(f"Detailed breakdown for camera {camera_id}: entry={entry_count}, exit={exit_count}, total={entry_count+exit_count}")
                     
                     # Execute the main query - be explicit about parameter placement
                     params = (hour_threshold, camera_id)
                     self.logger.info(f"Executing query with params: {params}")
                     cursor.execute(query, params)
                 else:
-                    # Without camera ID filter
+                    # Without camera ID filter - now including event_type in the selection
                     query = """
                     SELECT 
                         strftime('%Y-%m-%d %H:00', timestamp) as hour,
                         direction,
+                        event_type,
                         COUNT(*) as count,
                         camera_id
                     FROM detection_events 
                     WHERE strftime('%Y-%m-%d %H:00', timestamp) >= ? 
-                    AND event_type = 'detection_end'
-                    GROUP BY hour, direction, camera_id
-                    ORDER BY hour
+                    AND event_type IN ('entry', 'exit')
+                    GROUP BY hour, direction, event_type, camera_id
+                    ORDER BY hour, camera_id
                     """
                     # Log the query and parameters
                     self.logger.info(f"SQL query without camera_id filter: {query}")
@@ -989,6 +1003,7 @@ class DatabaseManager:
                 for row in rows:
                     hour_key = row['hour']
                     direction = row['direction']
+                    event_type = row['event_type']
                     count = row['count']
                     row_camera_id = row['camera_id']
                     
@@ -997,7 +1012,7 @@ class DatabaseManager:
                         self.logger.info(f"Skipping row for camera {row_camera_id} (we want {camera_id})")
                         continue
                         
-                    self.logger.info(f"Processing row: hour={hour_key}, direction={direction}, count={count}, camera_id={row_camera_id}")
+                    self.logger.info(f"Processing row: hour={hour_key}, direction={direction}, event_type={event_type}, count={count}, camera_id={row_camera_id}")
                     
                     # Create hour entry if not exists
                     if hour_key not in results:
@@ -1008,10 +1023,16 @@ class DatabaseManager:
                             "unknown": 0
                         }
                     
-                    # Add to direction count - handle None direction
-                    if direction is not None and direction in results[hour_key]:
+                    # Map entry/exit events to left_to_right/right_to_left
+                    # This is the key change: use event_type to determine the appropriate field
+                    if event_type == 'entry':
+                        results[hour_key]["left_to_right"] += count
+                    elif event_type == 'exit':
+                        results[hour_key]["right_to_left"] += count
+                    elif direction is not None and direction in results[hour_key]:
+                        # Keep original logic for backward compatibility
                         results[hour_key][direction] += count
-                    elif direction is None:
+                    else:
                         results[hour_key]["unknown"] += count
                     
                     # Add to total count
@@ -1053,13 +1074,14 @@ class DatabaseManager:
                     SELECT 
                         strftime('%Y-%m-%d %H:00', timestamp) as hour,
                         direction,
+                        event_type,
                         COUNT(*) as count,
                         camera_id
                     FROM detection_events 
                     WHERE strftime('%Y-%m-%d %H:00', timestamp) >= ? 
-                    AND event_type = 'detection_end'
+                    AND event_type IN ('entry', 'exit')
                     AND camera_id = ?
-                    GROUP BY hour, direction, camera_id
+                    GROUP BY hour, direction, event_type, camera_id
                     ORDER BY hour
                     """
                     cursor.execute(query, (hour_threshold, camera_id))
@@ -1068,12 +1090,13 @@ class DatabaseManager:
                     SELECT 
                         strftime('%Y-%m-%d %H:00', timestamp) as hour,
                         direction,
+                        event_type,
                         COUNT(*) as count,
                         camera_id
                     FROM detection_events 
                     WHERE strftime('%Y-%m-%d %H:00', timestamp) >= ? 
-                    AND event_type = 'detection_end'
-                    GROUP BY hour, direction, camera_id
+                    AND event_type IN ('entry', 'exit')
+                    GROUP BY hour, direction, event_type, camera_id
                     ORDER BY hour, camera_id
                     """
                     cursor.execute(query, (hour_threshold,))
@@ -1087,8 +1110,9 @@ class DatabaseManager:
                     result.append({
                         'hour': row[0],
                         'direction': row[1],
-                        'count': row[2],
-                        'camera_id': row[3]
+                        'event_type': row[2],
+                        'count': row[3],
+                        'camera_id': row[4]
                     })
                 
                 conn.close()
@@ -1123,4 +1147,33 @@ class DatabaseManager:
                 
             except Exception as e:
                 self.logger.error(f"Error checking camera validity: {e}")
-                return False 
+                return False
+    
+    def query_count(self, query, params=None):
+        """
+        Execute a COUNT query and return the integer result
+        
+        Args:
+            query: SQL query to execute (should be a COUNT query)
+            params: Optional parameters for the query
+            
+        Returns:
+            int: Count result from the query
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                    
+                result = cursor.fetchone()[0]
+                conn.close()
+                return result
+                
+            except Exception as e:
+                self.logger.error(f"Error executing count query: {e}")
+                return 0 

@@ -26,6 +26,10 @@
       "run",
       "mcp-server-git"
     ]
-  }
-  }
+  },
+  "ddg-search": {
+            "command": "uvx",
+            "args": ["duckduckgo-mcp-server"]
+        }
+    }
 }
