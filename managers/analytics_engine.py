@@ -48,24 +48,30 @@ def get_camera_entry_counts(last_hours=24, camera_registry=None):
         rows = cursor.fetchall()
         conn.close()
         
+        # Create result dict with counts from database
         result = {str(row[0]): row[1] for row in rows}
         
-        # If camera_registry is provided, ensure all cameras have an entry
+        # Filter out cameras that don't exist in the registry
         if camera_registry:
-            all_cameras = camera_registry.get_all_cameras()
-            for camera_id in all_cameras:
+            active_cameras = camera_registry.get_all_cameras()
+            # Only keep cameras that exist in the registry
+            result = {camera_id: count for camera_id, count in result.items() 
+                     if camera_id in active_cameras}
+            
+            # Ensure all active cameras have an entry, even if no events
+            for camera_id in active_cameras:
                 if camera_id not in result:
-                    # Generate a random value between 5-15 for visual demonstration
-                    result[camera_id] = random.randint(5, 15)
+                    # Use 0 instead of generating a random value
+                    result[camera_id] = 0
         
         return result
     except Exception as e:
         print(f"Error getting camera entry counts: {e}")
         # Return dummy data if there was an error
         if camera_registry:
-            return {camera_id: random.randint(5, 15) for camera_id in camera_registry.get_all_cameras()}
+            return {camera_id: 0 for camera_id in camera_registry.get_all_cameras()}
         else:
-            return {"main": 12, "secondary": 8}
+            return {"main": 0}
 
 def get_time_series(camera_id=None, hours=24, camera_registry=None):
     """
@@ -89,6 +95,10 @@ def get_time_series(camera_id=None, hours=24, camera_registry=None):
         cursor = conn.cursor()
 
         if camera_id:
+            # Check if camera exists in registry before querying
+            if camera_registry and not camera_registry.get_camera(camera_id):
+                return []  # Return empty list for non-existent camera
+                
             # Query for a specific camera
             cursor.execute("""
                 SELECT strftime('%Y-%m-%d %H:00', timestamp) as hour, COUNT(*) 
@@ -119,6 +129,8 @@ def get_time_series(camera_id=None, hours=24, camera_registry=None):
             
             series = {}
             for hour, cam, count in rows:
+                if camera_registry and not camera_registry.get_camera(cam):
+                    continue  # Skip cameras that don't exist in registry
                 series.setdefault(str(cam), []).append({"hour": hour, "count": count})
             
             # If camera_registry is provided, ensure all cameras have an entry
@@ -140,8 +152,7 @@ def get_time_series(camera_id=None, hours=24, camera_registry=None):
                    for cam_id in camera_registry.get_all_cameras()}
         else:
             return {
-                "main": generate_dummy_time_series("main", hours),
-                "secondary": generate_dummy_time_series("secondary", hours)
+                "main": generate_dummy_time_series("main", hours)
             }
 
 def get_heatmap(camera_id, width=10, height=10):
@@ -199,13 +210,8 @@ def generate_dummy_time_series(camera_id, hours):
         hour_time = now - timedelta(hours=i)
         hour_str = hour_time.strftime("%Y-%m-%d %H:00")
         
-        # Use camera_id as a seed for the random generator to make the
-        # pattern somewhat consistent for the same camera
-        seed = sum(ord(c) for c in str(camera_id))
-        random.seed(seed + i)
-        
-        # Generate count between 1-10
-        count = random.randint(1, 10)
+        # Always use 0 counts for consistency with other endpoints
+        count = 0
         
         result.append({"hour": hour_str, "count": count})
     

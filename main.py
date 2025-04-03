@@ -31,12 +31,17 @@ class ZVision:
         # Initialize database manager
         self.db_manager = DatabaseManager(self.resource_provider)
         
-        # Initialize camera registry
+        # Check if there are cameras already in the database
+        cameras = self.db_manager.list_cameras()
+        has_cameras_in_db = bool(cameras)
+        
+        # Initialize camera registry - skip default init if we have cameras in DB
         self.logger.info("Initializing camera registry...")
-        self.camera_registry = CameraRegistry(self.resource_provider)
+        if has_cameras_in_db:
+            self.logger.info(f"Found {len(cameras)} cameras in database, skipping default camera initialization")
+        self.camera_registry = CameraRegistry(self.resource_provider, skip_default_init=has_cameras_in_db)
         
         # Load cameras from database if available
-        cameras = self.db_manager.list_cameras()
         if cameras:
             self.logger.info(f"Loading {len(cameras)} cameras from database")
             for cam in cameras:
@@ -68,7 +73,7 @@ class ZVision:
             if os.path.exists(demo_video):
                 self.camera_registry.add_camera("secondary", demo_video, name="Camera secondary")
                 self.db_manager.add_camera("secondary", demo_video, "Camera secondary")
-                
+        
         self.logger.info(f"Camera registry initialized with {self.camera_registry.get_camera_count()} cameras")
         
         # Initialize camera manager and start capturing frames (for backward compatibility)

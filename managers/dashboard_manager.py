@@ -157,7 +157,6 @@ class DashboardManager:
                 # Update per-camera metrics
                 self.camera_metrics[camera_id][direction] += 1
             
-            self.logger.info(f"Recorded direction: {direction}, camera: {camera_id}")
     
     def record_footfall(self, event_type, camera_id=None):
         """
@@ -206,7 +205,6 @@ class DashboardManager:
                 # Update per-camera metrics
                 self.camera_metrics[camera_id][event_key] += 1
             
-            self.logger.info(f"Recorded footfall: {event_key}, total: {self.footfall_counts[event_key]}, camera: {camera_id}")
     
     def _monitor_detections(self):
         """

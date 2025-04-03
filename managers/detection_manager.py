@@ -245,20 +245,17 @@ class DetectionManager:
         if thread.is_alive():
             thread.join(timeout=1.0)
         
-        # Reset detection state
+        # Remove detection state completely instead of just resetting it
         if camera_id in self.states:
-            self.states[camera_id] = {
-                "person_detected": False,
-                "last_detection_time": None,
-                "current_direction": self.DIRECTION_UNKNOWN,
-                "no_person_counter": 0,
-                "last_snapshot_time": 0,  # Track last snapshot time
-                "snapshot_interval": 1.0  # Take snapshot every 1 second
-            }
+            del self.states[camera_id]
         
         # Clear position history
         if camera_id in self.position_history:
-            self.position_history[camera_id].clear()
+            del self.position_history[camera_id]
+        
+        # Clean up track states if any exist
+        if camera_id in self.track_states:
+            del self.track_states[camera_id]
         
         # Remove the thread reference
         del self.detection_threads[camera_id]
@@ -520,8 +517,6 @@ class DetectionManager:
                     "detection_start",
                     {"camera": camera_id, "track_id": track_id}
                 )
-            
-            self.logger.info(f"New track {track_id} detected on camera {camera_id}")
         else:
             # Existing track - update position history
             track_info = self.track_states[camera_id][track_id]
@@ -534,14 +529,12 @@ class DetectionManager:
                     # Entering ROI - log entry event but only if not already logged by direction
                     if not track_info.get('direction_logged', False) or track_info.get('movement_direction') != 'entry':
                         self._log_direction_event(camera_id, track_id, "entry", frame)
-                        self.logger.info(f"Track {track_id} entered ROI on camera {camera_id}")
                         track_info['direction_logged'] = True
                         track_info['movement_direction'] = 'entry'
                 else:
                     # Exiting ROI - log exit event but only if not already logged by direction
                     if not track_info.get('direction_logged', False) or track_info.get('movement_direction') != 'exit':
                         self._log_direction_event(camera_id, track_id, "exit", frame)
-                        self.logger.info(f"Track {track_id} exited ROI on camera {camera_id}")
                         track_info['direction_logged'] = True
                         track_info['movement_direction'] = 'exit'
                 
@@ -566,7 +559,6 @@ class DetectionManager:
                         track_info['direction_computed'] = True
                         track_info['movement_direction'] = direction
                         track_info['direction_logged'] = True
-                        self.logger.info(f"Track {track_id} movement direction {direction} on camera {camera_id}")
                         track_info['roi_status_changed'] = False
             
             # Remove logging of detection_continuing events
@@ -670,13 +662,8 @@ class DetectionManager:
                 dir_x /= magnitude
                 dir_y /= magnitude
             
-            self.logger.debug(f"Camera {camera_id} direction vector: ({dir_x}, {dir_y})")
-            self.logger.debug(f"Movement vector: ({movement_vector[0]}, {movement_vector[1]})")
-            
             # Calculate dot product
             dot_product = movement_vector[0] * dir_x + movement_vector[1] * dir_y
-            
-            self.logger.debug(f"Dot product: {dot_product}")
             
             # Apply threshold - reduced from 0.3 to 0.2 for more sensitive detection
             threshold = 0.2  # Reduced dot product threshold
@@ -687,7 +674,6 @@ class DetectionManager:
             else:
                 return None  # Movement perpendicular to direction
         except Exception as e:
-            self.logger.error(f"Error determining direction: {e}")
             return None
     
     def _log_direction_event(self, camera_id, track_id, event_type, frame):
@@ -700,7 +686,6 @@ class DetectionManager:
             event_type: 'entry' or 'exit'
             frame: Current video frame
         """
-        self.logger.info(f"Direction detected: {event_type} for track {track_id} on camera {camera_id}")
         
         # Use existing snapshot instead of creating a new one
         snapshot_path = self.track_states[camera_id][track_id]['snapshot_path']
@@ -821,12 +806,6 @@ class DetectionManager:
             # Add to history
             self.cpu_usage_history.append(cpu_percent)
             self.memory_usage_history.append(memory_percent)
-            
-            # Log high resource usage
-            if cpu_percent > 90:
-                self.logger.warning(f"High CPU usage: {cpu_percent}%")
-            if memory_percent > 90:
-                self.logger.warning(f"High memory usage: {memory_percent}%")
                 
         except Exception as e:
             self.logger.error(f"Error checking system resources: {e}")

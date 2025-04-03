@@ -61,7 +61,7 @@ class APIManager:
             cors_allowed_origins="*",
             async_mode='threading',  # Use threading mode instead of eventlet
             logger=True,             # Enable SocketIO's logger
-            engineio_logger=True     # Enable Engine.IO's logger
+            engineio_logger=False     # Enable Engine.IO's logger
         )
         self.logger.info(f"Using SocketIO with threading mode")
         
@@ -445,14 +445,50 @@ class APIManager:
                 
                 # Get detection status with error handling
                 try:
-                    detection_status = self.detection_manager.get_detection_status()
+                    # Get current cameras from registry instead of using potentially outdated info
+                    detection_status = {}
+                    if self.camera_registry:
+                        active_cameras = self.camera_registry.get_all_cameras()
+                        
+                        # Synchronize detection_manager states with camera registry
+                        if self.detection_manager:
+                            # Remove any detection states for cameras that no longer exist
+                            for camera_id in list(self.detection_manager.states.keys()):
+                                if camera_id not in active_cameras:
+                                    self.logger.info(f"Removing stale detection state for non-existent camera: {camera_id}")
+                                    del self.detection_manager.states[camera_id]
+                        
+                        # Now proceed with only active cameras
+                        for camera_id in active_cameras:
+                            if self.detection_manager and camera_id in self.detection_manager.states:
+                                state = self.detection_manager.states[camera_id]
+                                detection_status[camera_id] = {
+                                    "camera_id": camera_id,
+                                    "person_detected": state.get("person_detected", False),
+                                    "last_detection_time": state.get("last_detection_time"),
+                                    "direction": "unknown"
+                                }
+                                
+                                # Convert direction code to string if available
+                                dir_code = state.get("current_direction", self.detection_manager.DIRECTION_UNKNOWN)
+                                if dir_code == self.detection_manager.DIRECTION_LEFT_TO_RIGHT:
+                                    detection_status[camera_id]["direction"] = "left_to_right"
+                                elif dir_code == self.detection_manager.DIRECTION_RIGHT_TO_LEFT:
+                                    detection_status[camera_id]["direction"] = "right_to_left"
+                            else:
+                                # Camera exists but no detection state yet
+                                detection_status[camera_id] = {
+                                    "camera_id": camera_id,
+                                    "person_detected": False,
+                                    "last_detection_time": None,
+                                    "direction": "unknown"
+                                }
+                    else:
+                        # Fallback to detection manager's status if no registry
+                        detection_status = self.detection_manager.get_detection_status()
                 except Exception as e:
                     self.logger.error(f"Error getting detection status: {e}")
-                    detection_status = {
-                        "person_detected": False,
-                        "last_detection_time": None,
-                        "direction": "unknown"
-                    }
+                    detection_status = {}
                 
                 # Get detection active state with error handling
                 try:
@@ -468,23 +504,12 @@ class APIManager:
                     self.logger.error(f"Error getting dashboard summary: {e}")
                     dashboard_summary = {}
                 
-                # Get ROI configuration if available
-                roi_config = {}
-                try:
-                    # Since get_roi and get_entry_direction now require camera_id,
-                    # we'll just omit the ROI from the status endpoint
-                    # Clients should use /api/cameras/{camera_id} to get ROI details for each camera
-                    pass
-                except Exception as e:
-                    self.logger.error(f"Error getting ROI configuration: {e}")
-                
                 # Combine all parts
                 status = {
                     "system": system_status,
                     "detection": detection_status,
                     "detection_active": detection_active,
                     "dashboard": dashboard_summary
-                    # ROI config is removed from status response - use camera-specific endpoints instead
                 }
                 
                 return jsonify(status)
@@ -560,10 +585,14 @@ class APIManager:
                 # Log the camera ID for debugging
                 self.logger.info(f"Raw camera_id from request: '{cam_id}'")
                 
+                # Get time range parameter early since we'll need it for validation
+                time_range = request.args.get('timeRange', '24h')
+                hours = self._time_range_to_hours(time_range)
+                
                 # Validate camera ID and provide a clearer error message
                 if cam_id:
+                    # First check if camera exists in the cameras table
                     if not self.db_manager.is_camera_valid(cam_id):
-                        # Log a warning but continue with empty metrics instead of error
                         self.logger.warning(f"Camera '{cam_id}' not found in database, returning empty metrics")
                         return jsonify({
                             "total": 0, 
@@ -577,11 +606,32 @@ class APIManager:
                                 "change": 0
                             },
                             "camera_id": cam_id,
-                            "warning": f"No data found for camera '{cam_id}'"
+                            "warning": f"Camera '{cam_id}' not found in database"
                         })
-                
-                # Get time range parameter
-                time_range = request.args.get('timeRange', '24h')
+                    
+                    # Now check if there's actual data for this time range
+                    entry_count = self.db_manager.query_count(
+                        "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type IN ('entry', 'exit') AND timestamp >= datetime('now', ?)",
+                        [cam_id, f"-{int(hours)} hours"]
+                    )
+                    
+                    if entry_count == 0:
+                        self.logger.info(f"No data found for camera '{cam_id}' in the last {hours} hours")
+                        # Still return metrics but with a warning about no data in timeframe
+                        return jsonify({
+                            "total": 0, 
+                            "change": 0, 
+                            "hourlyData": [], 
+                            "directions": {
+                                "ltr": 0, 
+                                "rtl": 0, 
+                                "ltrPercentage": 0, 
+                                "rtlPercentage": 0, 
+                                "change": 0
+                            },
+                            "camera_id": cam_id,
+                            "warning": f"No events for camera '{cam_id}' in the selected time range"
+                        })
                 
                 # Get metrics using our new method
                 metrics = self.get_metrics(time_range, cam_id)
@@ -675,10 +725,14 @@ class APIManager:
                 # Log the camera ID for debugging
                 self.logger.info(f"Raw camera_id from request: '{cam_id}'")
                 
+                # Get time range parameter early
+                time_range = request.args.get('timeRange', '7d')
+                hours = self._time_range_to_hours(time_range)
+                
                 # Validate camera ID and provide a clearer error message
                 if cam_id:
+                    # First check if camera exists in cameras table
                     if not self.db_manager.is_camera_valid(cam_id):
-                        # Log a warning but continue with empty metrics instead of error
                         self.logger.warning(f"Camera '{cam_id}' not found in database, returning empty metrics")
                         return jsonify({
                             "totalDetections": 0,
@@ -687,11 +741,26 @@ class APIManager:
                             "peakCount": 0,
                             "change": 0,
                             "camera_id": cam_id,
-                            "warning": f"No data found for camera '{cam_id}'"
+                            "warning": f"Camera '{cam_id}' not found in database"
                         })
-                
-                # Get time range parameter
-                time_range = request.args.get('timeRange', '7d')
+                    
+                    # Check if there's data for this time range
+                    entry_count = self.db_manager.query_count(
+                        "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type IN ('entry', 'exit') AND timestamp >= datetime('now', ?)",
+                        [cam_id, f"-{int(hours)} hours"]
+                    )
+                    
+                    if entry_count == 0:
+                        self.logger.info(f"No data found for camera '{cam_id}' in the last {hours} hours")
+                        return jsonify({
+                            "totalDetections": 0,
+                            "avgPerDay": 0,
+                            "peakHour": "N/A",
+                            "peakCount": 0,
+                            "change": 0,
+                            "camera_id": cam_id,
+                            "warning": f"No events for camera '{cam_id}' in the selected time range"
+                        })
                 
                 # Get metrics summary using our new method
                 summary = self.get_metrics_summary(time_range, cam_id)
@@ -846,6 +915,11 @@ class APIManager:
                 # Get camera details and direction counts
                 cameras_data = []
                 for camera_id, count in camera_counts.items():
+                    # Skip cameras that don't exist in the registry
+                    if self.camera_registry and not self.camera_registry.get_camera(camera_id):
+                        self.logger.info(f"Skipping camera {camera_id} as it no longer exists in registry")
+                        continue
+                        
                     # Get camera name 
                     camera_name = f"Camera {camera_id}"
                     if self.camera_registry:
@@ -934,7 +1008,7 @@ class APIManager:
         
         # Get camera snapshot history
         @self.app.route('/api/snapshots/<camera_id>', methods=['GET'])
-        def get_camera_snapshots(self, camera_id):
+        def get_camera_snapshots(camera_id):
             """
             Get recent snapshots for a specific camera
             
@@ -965,12 +1039,24 @@ class APIManager:
                     """
                     rows = self.db_manager.query_db(query, (camera_id, limit))
                     
+                    # Use the absolute path to snapshots directory
+                    snapshots_abs = "/home/pi/zvision/snapshots"
+                    
                     # Convert to list of dictionaries
                     snapshots = []
                     for row in rows:
                         snapshot_path = row['snapshot_path']
+                        # Get absolute path
+                        if snapshot_path.startswith("snapshots/"):
+                            # Strip "snapshots/" prefix if it exists
+                            rel_snapshot_path = snapshot_path[len("snapshots/"):]
+                            abs_snapshot_path = os.path.join(snapshots_abs, rel_snapshot_path)
+                        else:
+                            # Use as is
+                            abs_snapshot_path = os.path.join(snapshots_abs, camera_id, os.path.basename(snapshot_path))
+                        
                         # Check if file exists
-                        if os.path.exists(snapshot_path):
+                        if os.path.exists(abs_snapshot_path):
                             # Get relative path for URL construction
                             rel_path = os.path.basename(snapshot_path)
                             snapshots.append({
@@ -994,7 +1080,7 @@ class APIManager:
                 return jsonify({'error': str(e)}), 500
         
         @self.app.route('/api/snapshot-image/<camera_id>/<path:filename>', methods=['GET'])
-        def get_snapshot_image(self, camera_id, filename):
+        def get_snapshot_image(camera_id, filename):
             """
             Get a specific snapshot image
             
@@ -1007,12 +1093,12 @@ class APIManager:
             """
             try:
                 self.logger.info(f"GET request received for /api/snapshot-image/{camera_id}/{filename}")
-                # Construct path to snapshot file
-                snapshots_dir = os.path.join("snapshots", camera_id)
+                # Use the absolute path to snapshots directory
+                snapshots_abs = "/home/pi/zvision/snapshots"
+                snapshots_dir = os.path.join(snapshots_abs, camera_id)
                 file_path = os.path.join(snapshots_dir, filename)
                 
                 # Validate that the path is within the snapshots directory
-                snapshots_abs = os.path.abspath("snapshots")
                 file_abs = os.path.abspath(file_path)
                 
                 if not file_abs.startswith(snapshots_abs):
@@ -1059,6 +1145,62 @@ class APIManager:
                 return jsonify(diagnostics)
             except Exception as e:
                 self.logger.error(f"Error in raw metrics diagnostic endpoint: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/trends', methods=['GET'])
+        def get_camera_trends_endpoint():
+            try:
+                self.logger.info("GET request received for /api/trends")
+                
+                # Get camera ID parameter
+                cam_id = request.args.get('cam_id')
+                
+                # Log the camera ID for debugging
+                self.logger.info(f"Raw camera_id from request: '{cam_id}'")
+                
+                # Get time range parameter early
+                time_range = request.args.get('timeRange', '7d')
+                hours = self._time_range_to_hours(time_range)
+                
+                # Validate camera ID
+                if cam_id:
+                    # First check if camera exists in cameras table
+                    if not self.db_manager.is_camera_valid(cam_id):
+                        self.logger.warning(f"Camera '{cam_id}' not found in database, returning empty trends")
+                        return jsonify({
+                            "entry_trends": [],
+                            "exit_trends": [],
+                            "camera_id": cam_id,
+                            "warning": f"Camera '{cam_id}' not found in database"
+                        })
+                    
+                    # Check if there's data for this time range
+                    entry_count = self.db_manager.query_count(
+                        "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type IN ('entry', 'exit') AND timestamp >= datetime('now', ?)",
+                        [cam_id, f"-{int(hours)} hours"]
+                    )
+                    
+                    if entry_count == 0:
+                        self.logger.info(f"No data found for camera '{cam_id}' in the last {hours} hours")
+                        return jsonify({
+                            "entry_trends": [],
+                            "exit_trends": [],
+                            "camera_id": cam_id,
+                            "warning": f"No events for camera '{cam_id}' in the selected time range"
+                        })
+                
+                # Get trends data
+                trends = self.get_camera_trends(time_range, cam_id)
+                
+                # Add the camera_id to the response for clarity
+                if isinstance(trends, dict) and not "error" in trends:
+                    trends["camera_id"] = cam_id
+                
+                # Return as JSON
+                return jsonify(trends)
+                
+            except Exception as e:
+                self.logger.error(f"Error in trends endpoint: {e}")
                 return jsonify({"error": str(e)}), 500
     
     def _generate_default_html(self):
@@ -1164,8 +1306,6 @@ class APIManager:
             if 'timestamp' not in data:
                 data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
-            self.logger.debug(f"Emitting socket event: {event_type} with data: {data}")
-            self.socketio.emit(event_type, data)
         except Exception as e:
             self.logger.error(f"Error emitting socket event: {e}")
         
@@ -1250,9 +1390,7 @@ class APIManager:
             dict: Metrics data in the format expected by the frontend
         """
         try:
-            # Log camera_id to verify it's being passed correctly
-            self.logger.info(f"Getting metrics for camera_id: {cam_id}, time_range: {time_range}")
-            
+          
             # Convert time_range to hours
             hours = self._time_range_to_hours(time_range)
             if hours is None:
@@ -1261,29 +1399,23 @@ class APIManager:
             # Get hourly metrics from database for camera-specific data
             hourly_metrics = self.db_manager.get_hourly_metrics(hours=hours, camera_id=cam_id)
             
-            # Log the raw metrics for debugging
-            self.logger.info(f"Raw hourly metrics for {cam_id}: {hourly_metrics}")
             
             # Directly query the database for entry and exit counts to verify
             entry_count = self.db_manager.query_count("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'entry'", [cam_id])
             exit_count = self.db_manager.query_count("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'exit'", [cam_id])
-            self.logger.error(f"CRITICAL DEBUG - Direct DB query results for {cam_id}: entry={entry_count}, exit={exit_count}, total={entry_count+exit_count}")
             
             # Use direct query results for accurate direction counts
             ltr_count = entry_count  # Map entry events to left-to-right count
             rtl_count = exit_count   # Map exit events to right-to-left count
             accurate_total = entry_count + exit_count
-            self.logger.error(f"CRITICAL DEBUG - Setting direction counts: ltr_count={ltr_count}, rtl_count={rtl_count}")
             
             # Process hourly metrics for hourly breakdown
             total_count = 0
             for hour_key, hour_data in hourly_metrics.items():
                 # We're only using this loop to calculate hourly totals, not direction counts
                 total_count += hour_data.get("detection_count", 0)
-                self.logger.info(f"Hour {hour_key}: detection_count={hour_data.get('detection_count', 0)}, ltr={hour_data.get('left_to_right', 0)}, rtl={hour_data.get('right_to_left', 0)}")
             
             # Set total_count to the accurate count from direct DB query
-            self.logger.info(f"Calculated total from hourly metrics: {total_count}, accurate total from direct query: {accurate_total}")
             total_count = accurate_total
             
             # Calculate percentages
@@ -1318,8 +1450,6 @@ class APIManager:
             # Sort hourly data by date and hour
             hourly_data.sort(key=lambda x: f"{x['date']} {x['hour']}")
             
-            # Log the processed data
-            self.logger.info(f"Processed metrics for {cam_id}: total={total_count}, ltr={ltr_count}, rtl={rtl_count}")
             
             # Create the response format that matches the expected frontend format
             response = {
@@ -1334,11 +1464,10 @@ class APIManager:
                     "change": 0  # We'll calculate this in a future update
                 }
             }
-            self.logger.error(f"FINAL RESPONSE for {cam_id}: {response}")
+
             return response
                 
         except Exception as e:
-            self.logger.error(f"Error getting metrics: {e}")
             return {"error": f"Internal server error: {str(e)}"}
             
     def get_metrics_summary(self, time_range, cam_id=None):
@@ -1370,7 +1499,6 @@ class APIManager:
             
             # Calculate total detections as sum of entry and exit events
             total_detections = entry_count + exit_count
-            self.logger.info(f"Direct counts for {cam_id}: entry={entry_count}, exit={exit_count}, total={total_detections}")
             
             # Calculate average per day
             days = hours / 24

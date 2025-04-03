@@ -266,7 +266,6 @@ class CameraManager:
                                 
                                 # For video files, it's normal to reach the end
                                 if self.is_video_file:
-                                    self.logger.info("End of video file reached, restarting from beginning")
                                     # Reopen video
                                     if cap is not None:
                                         cap.release()

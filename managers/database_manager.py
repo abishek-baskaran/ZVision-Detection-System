@@ -684,15 +684,14 @@ class DatabaseManager:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 
-                # Add to cameras table (for backward compatibility)
+                # Add to cameras table
                 cursor.execute("""
                 INSERT OR REPLACE INTO cameras 
                 (camera_id, source, name, width, height, fps, updated_at) 
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
                 """, (str(camera_id), source, name, width, height, fps))
                 
-                # Also update camera_config table to ensure both tables have the camera info
-                # First check if camera exists in camera_config
+                # Check if camera exists in camera_config
                 cursor.execute("SELECT camera_id FROM camera_config WHERE camera_id = ?", (str(camera_id),))
                 row = cursor.fetchone()
                 
@@ -700,15 +699,15 @@ class DatabaseManager:
                     # Update source, name, width, height, fps without affecting ROI settings
                     cursor.execute("""
                     UPDATE camera_config 
-                    SET source = ?, name = ?, width = ?, height = ?, fps = ?
+                    SET source = ?, name = ?, width = ?, height = ?, fps = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE camera_id = ?;
                     """, (source, name, width, height, fps, str(camera_id)))
                 else:
                     # Insert new camera with default enabled=1
                     cursor.execute("""
                     INSERT INTO camera_config 
-                    (camera_id, source, name, width, height, fps, enabled) 
-                    VALUES (?, ?, ?, ?, ?, ?, 1);
+                    (camera_id, source, name, width, height, fps, enabled, updated_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP);
                     """, (str(camera_id), source, name, width, height, fps))
                 
                 conn.commit()
@@ -743,11 +742,11 @@ class DatabaseManager:
                     conn.close()
                     return True
                 
-                # Delete camera record
+                # Delete camera record from cameras table
                 cursor.execute("DELETE FROM cameras WHERE camera_id=?", (camera_id,))
                 
-                # Also delete ROI settings for this camera
-                self.clear_roi(camera_id)
+                # Delete the entire camera record from camera_config table
+                cursor.execute("DELETE FROM camera_config WHERE camera_id=?", (camera_id,))
                 
                 conn.commit()
                 conn.close()
@@ -919,8 +918,6 @@ class DatabaseManager:
         """
         with self.db_lock:
             try:
-                # Log the request parameters
-                self.logger.info(f"get_hourly_metrics called with hours={hours}, camera_id={camera_id}")
                 
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row  # Use Row factory for named columns
@@ -948,22 +945,17 @@ class DatabaseManager:
                     GROUP BY hour, direction, event_type
                     ORDER BY hour
                     """
-                    # Log the query and parameters
-                    self.logger.info(f"SQL query with camera_id filter: {query}")
-                    self.logger.info(f"Parameters: hour_threshold={hour_threshold}, camera_id={camera_id}")
                     
                     # Check if there are any records for this camera
                     verification_query = "SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type IN ('entry', 'exit')"
                     cursor.execute(verification_query, (camera_id,))
                     count = cursor.fetchone()[0]
-                    self.logger.info(f"Total records for camera {camera_id} with event_type 'entry' or 'exit': {count}")
                     
                     # Also check entry and exit events separately for debugging
                     cursor.execute("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'entry'", (camera_id,))
                     entry_count = cursor.fetchone()[0]
                     cursor.execute("SELECT COUNT(*) FROM detection_events WHERE camera_id = ? AND event_type = 'exit'", (camera_id,))
                     exit_count = cursor.fetchone()[0]
-                    self.logger.info(f"Detailed breakdown for camera {camera_id}: entry={entry_count}, exit={exit_count}, total={entry_count+exit_count}")
                     
                     # Execute the main query - be explicit about parameter placement
                     params = (hour_threshold, camera_id)
@@ -984,19 +976,12 @@ class DatabaseManager:
                     GROUP BY hour, direction, event_type, camera_id
                     ORDER BY hour, camera_id
                     """
-                    # Log the query and parameters
-                    self.logger.info(f"SQL query without camera_id filter: {query}")
-                    self.logger.info(f"Parameters: hour_threshold={hour_threshold}")
                     
                     # Execute the main query
                     cursor.execute(query, (hour_threshold,))
                 
                 # Fetch all rows and log the raw result
                 rows = cursor.fetchall()
-                self.logger.info(f"Query returned {len(rows)} rows")
-                if len(rows) > 0:
-                    # Log the column names 
-                    self.logger.info(f"Column names: {rows[0].keys()}")
                 
                 # Process the results - based on whether camera_id is provided
                 results = {}
@@ -1006,13 +991,6 @@ class DatabaseManager:
                     event_type = row['event_type']
                     count = row['count']
                     row_camera_id = row['camera_id']
-                    
-                    # Skip rows that don't match our camera_id
-                    if camera_id is not None and camera_id != "" and row_camera_id != camera_id:
-                        self.logger.info(f"Skipping row for camera {row_camera_id} (we want {camera_id})")
-                        continue
-                        
-                    self.logger.info(f"Processing row: hour={hour_key}, direction={direction}, event_type={event_type}, count={count}, camera_id={row_camera_id}")
                     
                     # Create hour entry if not exists
                     if hour_key not in results:
@@ -1040,8 +1018,6 @@ class DatabaseManager:
                 
                 conn.close()
                 
-                # Log the final results
-                self.logger.info(f"Final hourly metrics for camera {camera_id}: {results}")
                 return results
                 
             except Exception as e:
@@ -1122,32 +1098,83 @@ class DatabaseManager:
                 self.logger.error(f"Error getting raw hourly metrics: {e}")
                 return []
     
-    def is_camera_valid(self, camera_id):
+    def is_camera_valid(self, camera_id, hours=None):
         """
-        Check if a camera ID exists in the database
+        Check if a camera ID is valid in the database
         
         Args:
             camera_id: Camera ID to check
+            hours: Optional hours to limit the check to recent data
             
         Returns:
-            bool: True if the camera exists, False otherwise
+            bool: True if camera exists, False otherwise
         """
         with self.db_lock:
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 
-                # Check if the camera exists in the detection_events table
-                query = "SELECT COUNT(*) FROM detection_events WHERE camera_id = ?"
-                cursor.execute(query, (camera_id,))
-                count = cursor.fetchone()[0]
+                if hours:
+                    # Check if camera has any events in the last N hours
+                    hour_threshold = (datetime.now() - 
+                                     timedelta(hours=hours)).strftime("%Y-%m-%d %H:00")
+                    
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM detection_events "
+                        "WHERE camera_id = ? AND timestamp >= ?",
+                        (camera_id, hour_threshold)
+                    )
+                    
+                    result = cursor.fetchone()[0] > 0
+                else:
+                    # First try to find camera in cameras table
+                    cursor.execute("SELECT camera_id FROM cameras WHERE camera_id=?", (camera_id,))
+                    result = cursor.fetchone() is not None
+                    
+                    # If not found in cameras table, check detection_events
+                    if not result:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM detection_events WHERE camera_id = ?",
+                            (camera_id,)
+                        )
+                        result = cursor.fetchone()[0] > 0
                 
                 conn.close()
-                return count > 0
+                return result
                 
             except Exception as e:
-                self.logger.error(f"Error checking camera validity: {e}")
+                self.logger.error(f"Error checking if camera is valid: {e}")
                 return False
+    
+    def query_db(self, query, params=None):
+        """
+        Execute a SQL query and return the results as a list of dictionaries
+        
+        Args:
+            query: SQL query to execute
+            params: Optional parameters for the query
+            
+        Returns:
+            list: Query results as a list of dictionaries
+        """
+        with self.db_lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+                cursor = conn.cursor()
+                
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                    
+                results = [dict(row) for row in cursor.fetchall()]
+                conn.close()
+                return results
+                
+            except Exception as e:
+                self.logger.error(f"Error executing database query: {e}")
+                return []
     
     def query_count(self, query, params=None):
         """

@@ -12,12 +12,13 @@ class CameraRegistry:
     Manages multiple camera instances
     """
     
-    def __init__(self, resource_provider):
+    def __init__(self, resource_provider, skip_default_init=False):
         """
         Initialize the camera registry
         
         Args:
             resource_provider: The resource provider for config and logging
+            skip_default_init: If True, skip initializing default cameras
         """
         self.logger = resource_provider.get_logger()
         self.config = resource_provider.get_config()
@@ -32,8 +33,9 @@ class CameraRegistry:
         # Initialization state tracking
         self.initialized = False
         
-        # Load default camera configuration
-        self._init_default_camera()
+        # Load default camera configuration if not skipped
+        if not skip_default_init:
+            self._init_default_camera()
         
         self.logger.info(f"CameraRegistry initialized with {len(self.cameras)} cameras")
         self.initialized = True
@@ -89,6 +91,15 @@ class CameraRegistry:
         """
         with self.lock:
             try:
+                # Convert source to appropriate type if it's a numeric string
+                if isinstance(source, str) and source.isdigit():
+                    try:
+                        source = int(source)
+                        self.logger.info(f"Converted string source '{source}' to integer")
+                    except ValueError:
+                        # Keep as string if conversion fails
+                        pass
+                
                 # Check if camera ID already exists and if we're already initialized
                 is_replacement = camera_id in self.cameras
                 if is_replacement and self.initialized:
@@ -124,7 +135,7 @@ class CameraRegistry:
                 
                 # Only test the connection if it's not a replacement and is a real device
                 # We can skip this for the database loading phase to avoid USB reconnection issues
-                if not is_replacement and isinstance(source, (int, str)) and not isinstance(source, bool):
+                if not is_replacement:
                     # Verify the camera can be opened before adding it
                     if not self._test_camera_connection(source):
                         self.logger.error(f"Failed to open camera source: {source}")
@@ -171,18 +182,38 @@ class CameraRegistry:
                     return True
                 return False
                 
-            # For USB or IP cameras, test opening
-            cap = cv2.VideoCapture(source)
-            if not cap.isOpened():
-                return False
+            # For USB or IP cameras, test opening with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                self.logger.info(f"Attempting to open camera source {source} (attempt {attempt+1}/{max_retries})")
                 
-            # Try to read a frame to confirm it's working
-            ret, _ = cap.read()
+                # For Raspberry Pi, try both numeric and string path formats
+                if isinstance(source, int):
+                    sources_to_try = [source, f"/dev/video{source}"]
+                else:
+                    sources_to_try = [source]
+                
+                for src in sources_to_try:
+                    cap = cv2.VideoCapture(src)
+                    if cap.isOpened():
+                        # Successfully opened, try to read a frame
+                        ret, _ = cap.read()
+                        cap.release()
+                        
+                        if ret:
+                            self.logger.info(f"Successfully connected to camera source: {src}")
+                            return True
+                    
+                    # Release capture object
+                    cap.release()
+                
+                # If we get here, the attempt failed - wait before retrying
+                if attempt < max_retries - 1:
+                    self.logger.info(f"Waiting before retry for camera {source}")
+                    time.sleep(1)  # Wait a second before retry
             
-            # Release the camera
-            cap.release()
-            
-            return ret
+            self.logger.error(f"Failed to open camera source after {max_retries} attempts: {source}")
+            return False
             
         except Exception as e:
             self.logger.error(f"Error testing camera connection: {e}")
